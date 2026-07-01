@@ -2,10 +2,10 @@ import {
   ActionLink,
   AppScreen,
   BottomNav,
-  BrandHeader,
   DotBoardPreview,
   Panel,
 } from "@/components/AppShell";
+import { ThemedBrandHeader } from "@/components/ThemedBrandHeader";
 
 const rules = [
   {
@@ -33,7 +33,7 @@ const rules = [
 export default function HowToPlayPage() {
   return (
     <AppScreen>
-      <BrandHeader title="How to Play" />
+      <ThemedBrandHeader title="How to Play" />
 
       <section className="space-y-3 py-4">
         <Panel>
@@ -52,7 +52,7 @@ export default function HowToPlayPage() {
           </Panel>
         ))}
 
-        <ActionLink href="/game/local">Try Local Match</ActionLink>
+        <ActionLink href="/game?gameId=local">Try Local Match</ActionLink>
       </section>
 
       <BottomNav />

@@ -2,10 +2,11 @@ import {
   ActionLink,
   AppScreen,
   BottomNav,
-  BrandHeader,
   Panel,
 } from "@/components/AppShell";
 import { AccountActions } from "@/components/AccountActions";
+import { ThemedBrandHeader } from "@/components/ThemedBrandHeader";
+import { ThemeShop } from "@/components/ThemeShop";
 
 const settings = [
   ["Sound", "On"],
@@ -18,7 +19,7 @@ const settings = [
 export default function SettingsPage() {
   return (
     <AppScreen>
-      <BrandHeader title="Settings" />
+      <ThemedBrandHeader title="Settings" />
 
       <section className="space-y-4 py-4">
         <Panel className="divide-y divide-white/10 p-0">
@@ -38,6 +39,11 @@ export default function SettingsPage() {
         <Panel tone="pink" className="space-y-3">
           <h2 className="text-xl font-bold">Account</h2>
           <AccountActions />
+        </Panel>
+
+        <Panel className="space-y-3">
+          <h2 className="text-xl font-bold">Themes</h2>
+          <ThemeShop />
         </Panel>
 
         <Panel className="grid gap-2">

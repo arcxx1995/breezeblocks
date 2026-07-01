@@ -1,0 +1,61 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "matchHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" },
+        { "fieldPath": "completedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "matchmakingQueue",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "queueName", "order": "ASCENDING" },
+        { "fieldPath": "joinedAt", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": [
+    {
+      "collectionGroup": "matchmakingQueue",
+      "fieldPath": "expireAt",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "games",
+      "fieldPath": "expireAt",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "matchHistory",
+      "fieldPath": "expireAt",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "games",
+      "fieldPath": "lineOwners",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "games",
+      "fieldPath": "boxOwners",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "games",
+      "fieldPath": "players",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "games",
+      "fieldPath": "winnerPlayerIds",
+      "indexes": []
+    }
+  ]
+}

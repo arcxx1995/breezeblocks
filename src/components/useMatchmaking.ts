@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import {
   cancelQueue,
-  createMatchIfReady,
   joinQueue,
+  subscribeToQueue,
 } from "@/lib/firebase/matchmaking";
 import {
   type JoinQueueResult,
@@ -16,7 +16,7 @@ import {
 } from "@/lib/matchmaking/types";
 
 export function useMatchmaking(mode: MatchMode) {
-  const { player } = useAuth();
+  const { isConfigured, player, signInGuest } = useAuth();
   const [queue, setQueue] = useState<JoinQueueResult | null>(null);
   const [status, setStatus] = useState<QueueStatus>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -27,40 +27,71 @@ export function useMatchmaking(mode: MatchMode) {
     [authType, requestedPlayerCount],
   );
 
-  const startQueue = useCallback(async () => {
+  const joinMatchmaking = useCallback(async (allowBots = false, rematchWithUid?: string) => {
     setStatus("queued");
     setError(null);
     try {
+      if (isConfigured && player.provider !== "google" && !player.uid) {
+        await signInGuest();
+        setStatus("idle");
+        return;
+      }
+
       const result = await joinQueue({
         authType,
         requestedPlayerCount,
         displayName: player.displayName,
         userId: player.provider === "google" ? player.uid ?? undefined : undefined,
         guestId: player.provider !== "google" ? player.uid ?? player.displayName : undefined,
+        allowBots,
+        rematchWithUid,
       });
       setQueue(result);
       setStatus(result.status);
-      if (result.status === "queued" && result.source === "functions") {
-        const matchResult = await createMatchIfReady({
-          authType,
-          requestedPlayerCount,
-        });
-        if (matchResult.status === "matched" && matchResult.gameId) {
-          setQueue({ ...result, status: "matched", gameId: matchResult.gameId });
-          setStatus("matched");
-        }
-      }
     } catch (caught) {
       setStatus("error");
       setError(caught instanceof Error ? caught.message : "Could not join queue.");
     }
-  }, [authType, player.displayName, player.provider, player.uid, requestedPlayerCount]);
+  }, [
+    authType,
+    isConfigured,
+    player.displayName,
+    player.provider,
+    player.uid,
+    requestedPlayerCount,
+    signInGuest,
+  ]);
+
+  const startQueue = useCallback(() => joinMatchmaking(false), [joinMatchmaking]);
+  const startBotMatch = useCallback(() => joinMatchmaking(true), [joinMatchmaking]);
+  const startRematch = useCallback(
+    (opponentUid: string) => joinMatchmaking(false, opponentUid),
+    [joinMatchmaking],
+  );
+
+  useEffect(() => {
+    if (!queue || queue.status !== "queued" || queue.source !== "functions") return;
+
+    return subscribeToQueue(
+      queue.queueId,
+      (nextQueue) => {
+        if (!nextQueue) return;
+        setQueue(nextQueue);
+        setStatus(nextQueue.status);
+      },
+      (caught) => setError(caught.message),
+    );
+  }, [queue]);
 
   const stopQueue = useCallback(async () => {
-    if (!queue) return;
-    await cancelQueue(queue.queueId);
-    setQueue(null);
-    setStatus("cancelled");
+    try {
+      if (queue) await cancelQueue(queue.queueId);
+      setQueue(null);
+      setStatus("cancelled");
+    } catch (caught) {
+      setStatus("error");
+      setError(caught instanceof Error ? caught.message : "Could not cancel queue.");
+    }
   }, [queue]);
 
   return {
@@ -68,7 +99,9 @@ export function useMatchmaking(mode: MatchMode) {
     queueName,
     status,
     error,
+    startBotMatch,
     startQueue,
+    startRematch,
     stopQueue,
   };
 }

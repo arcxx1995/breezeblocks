@@ -1,9 +1,10 @@
-import { ActionLink, AppScreen, BrandHeader, Panel } from "@/components/AppShell";
+import { ActionLink, AppScreen, Panel } from "@/components/AppShell";
+import { ThemedBrandHeader } from "@/components/ThemedBrandHeader";
 
 export default function PrivacyPage() {
   return (
     <AppScreen>
-      <BrandHeader title="Privacy" />
+      <ThemedBrandHeader title="Privacy" />
       <section className="flex flex-1 flex-col gap-4 py-4">
         <Panel tone="cream" className="space-y-3">
           <h2 className="text-3xl font-[340] leading-none">Privacy Policy</h2>

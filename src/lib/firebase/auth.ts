@@ -1,11 +1,13 @@
 import {
   GoogleAuthProvider,
+  linkWithPopup,
   onAuthStateChanged,
   signInAnonymously,
   signInWithPopup,
   signOut,
   type User,
 } from "firebase/auth";
+import { FirebaseError } from "firebase/app";
 import { getFirebaseAuth } from "@/lib/firebase/client";
 
 export type AuthSnapshot = {
@@ -66,6 +68,21 @@ export async function signInWithGoogle() {
   if (!auth) throw new Error("Firebase is not configured.");
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
+
+  const anonymousUser = auth.currentUser?.isAnonymous ? auth.currentUser : null;
+  if (anonymousUser) {
+    try {
+      return await linkWithPopup(anonymousUser, provider);
+    } catch (error) {
+      if (!(error instanceof FirebaseError) || error.code !== "auth/credential-already-in-use") {
+        throw error;
+      }
+      // Google account is already tied to a different uid; the anonymous
+      // session (and anything scoped to its uid, e.g. an in-progress game)
+      // cannot be preserved, so fall through to a normal sign-in.
+    }
+  }
+
   return signInWithPopup(auth, provider);
 }
 

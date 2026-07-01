@@ -17,21 +17,21 @@ The web client calls callable functions when Firebase is configured:
 
 - `joinQueue`
 - `cancelQueue`
-- `createMatchIfReady`
 - `submitMove`
+- `claimTimeoutSkip`
+- `claimBotMove`
+- `ensureSignedProfile`
 
-When Firebase is not configured, the matchmaking screen creates a local queue session in `localStorage` and opens `/game/local` after a short simulated wait.
+When Firebase is not configured, the matchmaking screen creates a local queue session in `localStorage` and opens `/game?gameId=local` after a short simulated wait.
 
 ## Implemented backend scaffold
 
-- `functions/src/index.ts` creates queue entries, cancels queue entries, creates game documents from ready queues, initializes players/lines/boxes, and validates `submitMove`.
+- `functions/src/index.ts` creates or reuses one queue entry per player/mode, expires stale queues inside matchmaking, creates compact single-document game state, starts bot matches after long waits, validates `submitMove`, handles bot moves and timeout skips, creates signed profiles, and finalizes signed player stats/history when games complete.
 - `functions/src/gameRules.ts` contains the server board constants and box completion helpers.
-- `src/lib/firebase/games.ts` contains client helpers for online game subscription and `submitMove`.
+- `src/lib/firebase/games.ts` contains client helpers for online game subscription, `submitMove`, bot moves, and timeout claims.
+- `src/lib/firebase/profile.ts` contains client helpers for signed profile creation and one-time profile/history reads.
 
-## Remaining backend work
+## Remaining validation work
 
-- Run Firebase emulators against real project config.
-- Add stale queue cleanup.
-- Add `claimTimeoutSkip`.
-- Update signed-in profile stats when a game completes.
-- Replace local game UI with Firestore-backed rendering for non-local game IDs.
+- Run Firebase emulators against real project config on a machine with Java installed.
+- Complete a two-browser signed match and confirm `users/{uid}` stats and `matchHistory` documents update once.

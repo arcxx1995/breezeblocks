@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
 type AppScreenProps = {
   children: ReactNode;
@@ -14,8 +14,8 @@ type ActionLinkProps = {
 
 export function AppScreen({ children, className = "" }: AppScreenProps) {
   return (
-    <main className={`min-h-dvh bg-black text-white ${className}`}>
-      <section className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-4 py-4">
+    <main className={`app-phone-viewport text-white ${className}`}>
+      <section className="app-phone-screen flex flex-col px-4 py-4">
         {children}
       </section>
     </main>
@@ -25,14 +25,19 @@ export function AppScreen({ children, className = "" }: AppScreenProps) {
 export function BrandHeader({
   title,
   action,
+  accentColor,
 }: {
   title?: string;
   action?: ReactNode;
+  accentColor?: string;
 }) {
   return (
     <header className="flex items-center justify-between gap-3 py-2">
       <Link href="/lobby" className="min-w-0">
-        <p className="font-mono text-xs uppercase tracking-[0.18em] text-[#DCEEB1]">
+        <p
+          className="font-mono text-xs uppercase tracking-[0.18em]"
+          style={{ color: accentColor ?? "#DCEEB1" }}
+        >
           Breezeblocks
         </p>
         <h1 className="truncate text-3xl font-[340] leading-none text-white">
@@ -70,10 +75,12 @@ export function Panel({
   children,
   tone = "dark",
   className = "",
+  style,
 }: {
   children: ReactNode;
-  tone?: "dark" | "lilac" | "lime" | "cream" | "pink";
+  tone?: "dark" | "lilac" | "lime" | "cream" | "pink" | "custom";
   className?: string;
+  style?: CSSProperties;
 }) {
   const tones = {
     dark: "border-white/15 bg-[#111111] text-white",
@@ -81,10 +88,11 @@ export function Panel({
     lime: "border-transparent bg-[#DCEEB1] text-black",
     cream: "border-transparent bg-[#F4ECD6] text-black",
     pink: "border-transparent bg-[#EFD4D4] text-black",
+    custom: "border-transparent",
   };
 
   return (
-    <section className={`rounded-lg border p-4 ${tones[tone]} ${className}`}>
+    <section className={`rounded-lg border p-4 ${tones[tone]} ${className}`} style={style}>
       {children}
     </section>
   );

@@ -1,10 +1,10 @@
-import { MatchmakingClient } from "@/components/MatchmakingClient";
+import { Suspense } from "react";
+import { MatchmakingRouteClient } from "@/components/MatchmakingRouteClient";
 
-export default async function MatchmakingPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ mode?: string }>;
-}) {
-  const params = await searchParams;
-  return <MatchmakingClient mode={params.mode ?? "quick"} />;
+export default function MatchmakingPage() {
+  return (
+    <Suspense>
+      <MatchmakingRouteClient />
+    </Suspense>
+  );
 }

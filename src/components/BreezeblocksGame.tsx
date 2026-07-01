@@ -21,7 +21,6 @@ const PADDING = 28;
 const STEP = (BOARD_SIZE - PADDING * 2) / (DOT_COLS - 1);
 const TOTAL_BOXES = BOX_ROWS * BOX_COLS;
 const DOT_HIT_RADIUS = 14;
-const INITIAL_GAME_TIME = 0;
 
 type BoardDot = {
   row: number;
@@ -41,37 +40,29 @@ type BoardPoint = {
 };
 
 export function BreezeblocksGame({ gameId = "local" }: { gameId?: string }) {
-  const [game, setGame] = useState<GameState>(() =>
-    createInitialGame(INITIAL_GAME_TIME),
-  );
-  const [now, setNow] = useState(INITIAL_GAME_TIME);
-  const [isTimerReady, setIsTimerReady] = useState(false);
+  const [game, setGame] = useState<GameState>(() => createInitialGame());
+  const [now, setNow] = useState(() => Date.now());
   const [lastMoveId, setLastMoveId] = useState<string | null>(null);
 
   useEffect(() => {
-    const hydrationTimer = window.setTimeout(() => {
-      const startedAt = Date.now();
-      setGame(createInitialGame(startedAt));
-      setNow(startedAt);
-      setIsTimerReady(true);
-    }, 0);
     const interval = window.setInterval(() => setNow(Date.now()), 250);
-    return () => {
-      window.clearTimeout(hydrationTimer);
-      window.clearInterval(interval);
-    };
+    return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
-    if (!isTimerReady) return;
     if (game.status !== "active") return;
     const delay = Math.max(0, game.turnDeadlineAt - Date.now());
     const timeout = window.setTimeout(() => {
-      setGame((current) => skipTurn(current));
-      setNow(Date.now());
+      const currentTime = Date.now();
+      setGame((current) =>
+        current.status === "active" && current.turnDeadlineAt <= currentTime
+          ? skipTurn(current, currentTime)
+          : current,
+      );
+      setNow(currentTime);
     }, delay);
     return () => window.clearTimeout(timeout);
-  }, [game.status, game.turnDeadlineAt, isTimerReady]);
+  }, [game.status, game.turnDeadlineAt]);
 
   const activePlayer = game.players[game.currentPlayerIndex];
   const remainingSeconds = Math.max(
@@ -92,9 +83,10 @@ export function BreezeblocksGame({ gameId = "local" }: { gameId?: string }) {
   }
 
   function resetGame() {
-    setGame(createInitialGame());
+    const startedAt = Date.now();
+    setGame(createInitialGame(startedAt));
     setLastMoveId(null);
-    setNow(Date.now());
+    setNow(startedAt);
   }
 
   const winners = game.players.filter((player) =>
@@ -102,8 +94,8 @@ export function BreezeblocksGame({ gameId = "local" }: { gameId?: string }) {
   );
 
   return (
-    <main className="min-h-dvh overflow-hidden bg-black text-white">
-      <section className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-4 py-4">
+    <main className="app-phone-viewport text-white">
+      <section className="app-phone-screen flex flex-col px-4 py-4">
         <header className="flex items-center justify-between gap-3 py-2">
           <div>
             <p className="font-mono text-xs uppercase tracking-[0.18em] text-[#DCEEB1]">
@@ -210,22 +202,6 @@ export function BreezeblocksGame({ gameId = "local" }: { gameId?: string }) {
             lastMoveId={lastMoveId}
             onDrawLine={drawLine}
           />
-        </section>
-
-        <section className="rounded-lg border border-white/15 bg-[#111111] p-3">
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-bold text-white">Game log</h2>
-            <span className="font-mono text-xs uppercase tracking-[0.12em] text-white/50">
-              {game.moveNumber} moves
-            </span>
-          </div>
-          <div className="space-y-1">
-            {game.log.map((entry) => (
-              <p key={entry.id} className="text-sm font-normal text-white/70">
-                {entry.message}
-              </p>
-            ))}
-          </div>
         </section>
       </section>
     </main>

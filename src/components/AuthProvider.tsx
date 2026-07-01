@@ -67,7 +67,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setError(null);
           await signInAsGuest();
         } catch (caught) {
-          setError(toErrorMessage(caught));
+          const message = toErrorMessage(caught);
+          setError(message);
+          throw new Error(message);
         }
       },
       async signInGoogle() {
@@ -75,7 +77,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setError(null);
           await signInWithGoogle();
         } catch (caught) {
-          setError(toErrorMessage(caught));
+          const message = toErrorMessage(caught);
+          setError(message);
+          throw new Error(message);
         }
       },
       async signOut() {
@@ -84,7 +88,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await signOutCurrentUser();
           setPlayer(toAuthSnapshot(null));
         } catch (caught) {
-          setError(toErrorMessage(caught));
+          const message = toErrorMessage(caught);
+          setError(message);
+          throw new Error(message);
         }
       },
     }),

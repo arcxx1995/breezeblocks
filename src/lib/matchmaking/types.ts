@@ -17,6 +17,8 @@ export type JoinQueueInput = {
   displayName: string;
   userId?: string;
   guestId?: string;
+  allowBots?: boolean;
+  rematchWithUid?: string;
 };
 
 export type JoinQueueResult = {

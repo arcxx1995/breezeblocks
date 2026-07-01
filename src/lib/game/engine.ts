@@ -166,6 +166,13 @@ export function submitLine(
       ? state.currentPlayerIndex
       : getNextActivePlayerIndex(players, state.currentPlayerIndex);
 
+  if (nextPlayerIndex === null) {
+    return finishGame(
+      { ...state, players, lines, boxes, moveNumber: state.moveNumber + 1 },
+      "All players are inactive. Game over.",
+    );
+  }
+
   const nextState: GameState = {
     ...state,
     players,
@@ -208,12 +215,10 @@ export function skipTurn(state: GameState, now = Date.now()): GameState {
 
   const nextPlayerIndex = getNextActivePlayerIndex(players, state.currentPlayerIndex);
 
-  return {
+  const skippedState: GameState = {
     ...state,
     players,
-    currentPlayerIndex: nextPlayerIndex,
-    turnStartedAt: now,
-    turnDeadlineAt: now + TURN_DURATION_SECONDS * 1000,
+    currentPlayerIndex: state.currentPlayerIndex,
     log: [
       {
         id: `skip-${state.moveNumber}-${now}`,
@@ -221,6 +226,17 @@ export function skipTurn(state: GameState, now = Date.now()): GameState {
       },
       ...state.log,
     ].slice(0, 5),
+  };
+
+  if (nextPlayerIndex === null) {
+    return finishGame(skippedState, "All players are inactive. Game over.");
+  }
+
+  return {
+    ...skippedState,
+    currentPlayerIndex: nextPlayerIndex,
+    turnStartedAt: now,
+    turnDeadlineAt: now + TURN_DURATION_SECONDS * 1000,
   };
 }
 
@@ -262,7 +278,7 @@ function getNextActivePlayerIndex(players: Player[], currentPlayerIndex: number)
     const candidateIndex = (currentPlayerIndex + offset) % players.length;
     if (players[candidateIndex].status === "active") return candidateIndex;
   }
-  return currentPlayerIndex;
+  return null;
 }
 
 function maybeCompleteGame(state: GameState): GameState {
@@ -272,6 +288,10 @@ function maybeCompleteGame(state: GameState): GameState {
 
   if (capturedBoxes < BOX_ROWS * BOX_COLS) return state;
 
+  return finishGame(state, "Game over.");
+}
+
+function finishGame(state: GameState, message: string): GameState {
   const highScore = Math.max(...state.players.map((player) => player.score));
   const winnerPlayerIds = state.players
     .filter((player) => player.score === highScore)
@@ -281,6 +301,6 @@ function maybeCompleteGame(state: GameState): GameState {
     ...state,
     status: "completed",
     winnerPlayerIds,
-    log: [{ id: "completed", message: "Game over." }, ...state.log].slice(0, 5),
+    log: [{ id: "completed", message }, ...state.log].slice(0, 5),
   };
 }

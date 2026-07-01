@@ -1,12 +1,12 @@
 import { httpsCallable } from "firebase/functions";
+import { doc, onSnapshot } from "firebase/firestore";
 import { getFirebaseFunctions } from "@/lib/firebase/client";
+import { getFirebaseDb } from "@/lib/firebase/client";
 import {
   type JoinQueueInput,
   type JoinQueueResult,
-  type PlayerCount,
   type QueueName,
   type QueueSnapshot,
-  type AuthType,
   toQueueName,
 } from "@/lib/matchmaking/types";
 
@@ -49,6 +49,35 @@ export async function joinQueue(input: JoinQueueInput): Promise<JoinQueueResult>
   return queue;
 }
 
+export function subscribeToQueue(
+  queueId: string,
+  onChange: (queue: JoinQueueResult | null) => void,
+  onError: (error: Error) => void,
+) {
+  const db = getFirebaseDb();
+  if (!db) return () => {};
+
+  return onSnapshot(
+    doc(db, "matchmakingQueue", queueId),
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        onChange(null);
+        return;
+      }
+
+      const data = snapshot.data();
+      onChange({
+        queueId: snapshot.id,
+        queueName: data.queueName,
+        status: data.status,
+        gameId: data.gameId,
+        source: "functions",
+      });
+    },
+    onError,
+  );
+}
+
 export async function cancelQueue(queueId: string) {
   const functions = getFirebaseFunctions();
 
@@ -65,24 +94,6 @@ export async function cancelQueue(queueId: string) {
   if (snapshot?.queueId === queueId) {
     window.localStorage.removeItem(STORAGE_KEY);
   }
-}
-
-export async function createMatchIfReady(input: {
-  authType: AuthType;
-  requestedPlayerCount: PlayerCount;
-}) {
-  const functions = getFirebaseFunctions();
-
-  if (!functions) {
-    return { status: "queued" as const };
-  }
-
-  const callable = httpsCallable<
-    { authType: AuthType; requestedPlayerCount: PlayerCount },
-    { status: "queued" | "matched"; gameId?: string; queueName?: QueueName }
-  >(functions, "createMatchIfReady");
-  const result = await callable(input);
-  return result.data;
 }
 
 export function getLocalQueueSnapshot(): QueueSnapshot | null {

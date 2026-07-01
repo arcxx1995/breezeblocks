@@ -26,12 +26,15 @@ export function AuthActionButton({
 
   async function handleClick() {
     setIsPending(true);
-    onBeforeAction?.();
-    if (action === "anonymous") await auth.signInGuest();
-    if (action === "google") await auth.signInGoogle();
-    if (action === "signOut") await auth.signOut();
-    setIsPending(false);
-    router.push(redirectTo);
+    try {
+      if (action === "anonymous") await auth.signInGuest();
+      if (action === "google") await auth.signInGoogle();
+      if (action === "signOut") await auth.signOut();
+      onBeforeAction?.();
+      router.push(redirectTo);
+    } finally {
+      setIsPending(false);
+    }
   }
 
   const styles =

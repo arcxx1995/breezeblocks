@@ -1,9 +1,10 @@
-import { ActionLink, AppScreen, BrandHeader, Panel } from "@/components/AppShell";
+import { ActionLink, AppScreen, Panel } from "@/components/AppShell";
+import { ThemedBrandHeader } from "@/components/ThemedBrandHeader";
 
 export default function TermsPage() {
   return (
     <AppScreen>
-      <BrandHeader title="Terms" />
+      <ThemedBrandHeader title="Terms" />
       <section className="flex flex-1 flex-col gap-4 py-4">
         <Panel tone="lilac" className="space-y-3">
           <h2 className="text-3xl font-[340] leading-none">Terms of Service</h2>

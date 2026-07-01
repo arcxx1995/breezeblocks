@@ -5,9 +5,13 @@ exports.lineId = lineId;
 exports.boxId = boxId;
 exports.createInitialLines = createInitialLines;
 exports.createInitialBoxes = createInitialBoxes;
+exports.createInitialLineOwners = createInitialLineOwners;
+exports.createInitialBoxOwners = createInitialBoxOwners;
 exports.assertValidLine = assertValidLine;
 exports.getCompletedBoxes = getCompletedBoxes;
 exports.getNextActivePlayer = getNextActivePlayer;
+exports.getAdjacentBoxIds = getAdjacentBoxIds;
+exports.isBoxComplete = isBoxComplete;
 exports.DOT_ROWS = 10;
 exports.DOT_COLS = 10;
 exports.BOX_ROWS = 9;
@@ -54,6 +58,12 @@ function createInitialBoxes() {
     }
     return boxes;
 }
+function createInitialLineOwners() {
+    return Object.fromEntries(createInitialLines().map((line) => [line.lineId, null]));
+}
+function createInitialBoxOwners() {
+    return Object.fromEntries(createInitialBoxes().map((box) => [box.boxId, null]));
+}
 function assertValidLine(orientation, row, col) {
     if (orientation === "horizontal") {
         return row >= 0 && row < exports.DOT_ROWS && col >= 0 && col < exports.DOT_COLS - 1;
@@ -61,9 +71,10 @@ function assertValidLine(orientation, row, col) {
     return row >= 0 && row < exports.DOT_ROWS - 1 && col >= 0 && col < exports.DOT_COLS;
 }
 function getCompletedBoxes(orientation, row, col, lines, boxes) {
+    const lineOwners = Object.fromEntries([...lines.entries()].map(([id, line]) => [id, line.ownerPlayerId]));
     return getAdjacentBoxIds(orientation, row, col).filter((candidateBoxId) => {
         const box = boxes.get(candidateBoxId);
-        return box && !box.ownerPlayerId && isBoxComplete(candidateBoxId, lines);
+        return box && !box.ownerPlayerId && isBoxComplete(candidateBoxId, lineOwners);
     });
 }
 function getNextActivePlayer(players, currentPlayerId) {
@@ -75,7 +86,7 @@ function getNextActivePlayer(players, currentPlayerId) {
             return candidate.playerId;
         }
     }
-    return currentPlayerId;
+    return null;
 }
 function getAdjacentBoxIds(orientation, row, col) {
     if (orientation === "horizontal") {
@@ -89,12 +100,12 @@ function getAdjacentBoxIds(orientation, row, col) {
         col < exports.BOX_COLS ? boxId(row, col) : null,
     ].filter((id) => Boolean(id));
 }
-function isBoxComplete(id, lines) {
+function isBoxComplete(id, lineOwners) {
     const [, rowValue, colValue] = id.split("-");
     const row = Number(rowValue);
     const col = Number(colValue);
-    return (Boolean(lines.get(lineId("horizontal", row, col))?.ownerPlayerId) &&
-        Boolean(lines.get(lineId("horizontal", row + 1, col))?.ownerPlayerId) &&
-        Boolean(lines.get(lineId("vertical", row, col))?.ownerPlayerId) &&
-        Boolean(lines.get(lineId("vertical", row, col + 1))?.ownerPlayerId));
+    return (lineOwners[lineId("horizontal", row, col)] != null &&
+        lineOwners[lineId("horizontal", row + 1, col)] != null &&
+        lineOwners[lineId("vertical", row, col)] != null &&
+        lineOwners[lineId("vertical", row, col + 1)] != null);
 }

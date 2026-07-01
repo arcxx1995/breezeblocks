@@ -29,6 +29,10 @@ export type ServerPlayer = {
   turnOrder: number;
 };
 
+export type OwnerIndex = number | null;
+export type LineOwners = Record<string, OwnerIndex>;
+export type BoxOwners = Record<string, OwnerIndex>;
+
 export function lineId(orientation: LineOrientation, row: number, col: number) {
   return `${orientation[0]}-${row}-${col}`;
 }
@@ -74,6 +78,18 @@ export function createInitialBoxes() {
   return boxes;
 }
 
+export function createInitialLineOwners() {
+  return Object.fromEntries(
+    createInitialLines().map((line) => [line.lineId, null]),
+  ) as LineOwners;
+}
+
+export function createInitialBoxOwners() {
+  return Object.fromEntries(
+    createInitialBoxes().map((box) => [box.boxId, null]),
+  ) as BoxOwners;
+}
+
 export function assertValidLine(
   orientation: LineOrientation,
   row: number,
@@ -92,9 +108,12 @@ export function getCompletedBoxes(
   lines: Map<string, ServerLine>,
   boxes: Map<string, ServerBox>,
 ) {
+  const lineOwners = Object.fromEntries(
+    [...lines.entries()].map(([id, line]) => [id, line.ownerPlayerId]),
+  ) as LineOwners;
   return getAdjacentBoxIds(orientation, row, col).filter((candidateBoxId) => {
     const box = boxes.get(candidateBoxId);
-    return box && !box.ownerPlayerId && isBoxComplete(candidateBoxId, lines);
+    return box && !box.ownerPlayerId && isBoxComplete(candidateBoxId, lineOwners);
   });
 }
 
@@ -112,10 +131,10 @@ export function getNextActivePlayer(
       return candidate.playerId;
     }
   }
-  return currentPlayerId;
+  return null;
 }
 
-function getAdjacentBoxIds(
+export function getAdjacentBoxIds(
   orientation: LineOrientation,
   row: number,
   col: number,
@@ -133,14 +152,14 @@ function getAdjacentBoxIds(
   ].filter((id): id is string => Boolean(id));
 }
 
-function isBoxComplete(id: string, lines: Map<string, ServerLine>) {
+export function isBoxComplete(id: string, lineOwners: LineOwners) {
   const [, rowValue, colValue] = id.split("-");
   const row = Number(rowValue);
   const col = Number(colValue);
   return (
-    Boolean(lines.get(lineId("horizontal", row, col))?.ownerPlayerId) &&
-    Boolean(lines.get(lineId("horizontal", row + 1, col))?.ownerPlayerId) &&
-    Boolean(lines.get(lineId("vertical", row, col))?.ownerPlayerId) &&
-    Boolean(lines.get(lineId("vertical", row, col + 1))?.ownerPlayerId)
+    lineOwners[lineId("horizontal", row, col)] != null &&
+    lineOwners[lineId("horizontal", row + 1, col)] != null &&
+    lineOwners[lineId("vertical", row, col)] != null &&
+    lineOwners[lineId("vertical", row, col + 1)] != null
   );
 }

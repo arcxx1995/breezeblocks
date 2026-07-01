@@ -3,6 +3,8 @@
 :root {
   --background: #000000;
   --foreground: #ffffff;
+  --phone-preview-width: 390px;
+  --phone-preview-height: 844px;
 }
 
 @theme inline {
@@ -13,12 +15,62 @@
 }
 
 body {
-  background: var(--background);
+  min-height: 100%;
+  overflow: hidden;
+  background: #181818;
   color: var(--foreground);
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-feature-settings: "kern";
+  overscroll-behavior: none;
 }
 
 button {
   -webkit-tap-highlight-color: transparent;
+}
+
+.app-phone-viewport {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 40%),
+    #181818;
+  padding: 16px;
+}
+
+.app-phone-screen {
+  width: var(--phone-preview-width);
+  height: min(var(--phone-preview-height), calc(100dvh - 32px));
+  max-width: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--background);
+  color: var(--foreground);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 34px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.app-phone-screen::-webkit-scrollbar {
+  display: none;
+}
+
+@media (max-width: 479px) {
+  .app-phone-viewport {
+    min-height: 100dvh;
+    padding: 0;
+    background: var(--background);
+  }
+
+  .app-phone-screen {
+    width: 100dvw;
+    height: 100dvh;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
 }

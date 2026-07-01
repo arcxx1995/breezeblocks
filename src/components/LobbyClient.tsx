@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   ActionLink,
   AppScreen,
@@ -10,6 +11,8 @@ import {
 } from "@/components/AppShell";
 import { AuthNotice } from "@/components/AuthActions";
 import { useAuth } from "@/components/AuthProvider";
+import { usePlayerProfile } from "@/components/usePlayerProfile";
+import { getTheme } from "@/lib/themes";
 
 const modes = [
   { label: "Quick Match", href: "/matchmaking?mode=quick" },
@@ -18,8 +21,21 @@ const modes = [
   { label: "4 Players", href: "/matchmaking?mode=4p" },
 ];
 
+// Mirrors functions/src/index.ts minClaimGapMillis so the button reflects
+// today's claim state on load instead of waiting for a failed claim attempt.
+const DAILY_CLAIM_GAP_MILLIS = 20 * 60 * 60 * 1000;
+
 export function LobbyClient() {
   const { player } = useAuth();
+  const { profile, isSignedIn, claimDaily } = usePlayerProfile();
+  const theme = getTheme(profile?.activeThemeId ?? "classic");
+  const [claiming, setClaiming] = useState(false);
+  const [claimedReward, setClaimedReward] = useState<number | null>(null);
+  const [claimError, setClaimError] = useState<string | null>(null);
+  const [now] = useState(() => Date.now());
+  const claimedToday = profile
+    ? now - profile.lastLoginClaimAtMillis < DAILY_CLAIM_GAP_MILLIS
+    : false;
   const initials = player.displayName
     .split(" ")
     .map((part) => part[0])
@@ -27,10 +43,29 @@ export function LobbyClient() {
     .slice(0, 2)
     .toUpperCase();
 
+  async function handleClaimDaily() {
+    setClaiming(true);
+    setClaimError(null);
+    try {
+      const result = await claimDaily();
+      if (result) {
+        setClaimedReward(result.reward);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not claim reward.";
+      if (!message.toLowerCase().includes("already claimed")) {
+        setClaimError(message);
+      }
+    } finally {
+      setClaiming(false);
+    }
+  }
+
   return (
     <AppScreen>
       <BrandHeader
         title="Lobby"
+        accentColor={theme.accent}
         action={
           <ActionLink href="/settings" variant="secondary">
             Settings
@@ -50,19 +85,55 @@ export function LobbyClient() {
               </h2>
               <p className="text-sm text-black/65">
                 {player.provider === "google"
-                  ? "Signed in. Your wins and boxes will be saved when stats are connected."
+                  ? "Signed in. Your wins, boxes, and games are saved."
                   : "Playing as Guest. You will only match with other anonymous players."}
               </p>
             </div>
           </div>
           <StatStrip
             stats={[
-              { label: "Wins", value: player.provider === "google" ? "0" : "--" },
-              { label: "Boxes", value: player.provider === "google" ? "0" : "--" },
-              { label: "Games", value: player.provider === "google" ? "0" : "--" },
+              {
+                label: "Wins",
+                value: isSignedIn ? String(profile?.totalWins ?? 0) : "--",
+              },
+              {
+                label: "Boxes",
+                value: isSignedIn ? String(profile?.totalBoxesWon ?? 0) : "--",
+              },
+              {
+                label: "Games",
+                value: isSignedIn ? String(profile?.totalGamesPlayed ?? 0) : "--",
+              },
             ]}
           />
           <AuthNotice dark />
+        </Panel>
+
+        <Panel tone="lime" className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-bold">Daily Reward</h2>
+              <p className="text-sm text-black/65">
+                {isSignedIn
+                  ? `${profile?.sparks ?? 0} Sparks · Day ${profile?.loginStreak ?? 0} streak`
+                  : "Sign in to earn Sparks and unlock themes."}
+              </p>
+            </div>
+            {isSignedIn && (
+              <button
+                type="button"
+                onClick={handleClaimDaily}
+                disabled={claimedToday || claiming}
+                className="flex min-h-11 shrink-0 items-center justify-center rounded-full bg-black px-4 text-sm font-medium text-white transition disabled:opacity-40"
+              >
+                {claiming ? "Claiming..." : claimedToday ? "Claimed" : "Claim"}
+              </button>
+            )}
+          </div>
+          {claimedReward !== null && (
+            <p className="text-sm font-medium text-black">+{claimedReward} Sparks!</p>
+          )}
+          {claimError && <p className="text-sm text-black/70">{claimError}</p>}
         </Panel>
 
         <ActionLink href="/matchmaking?mode=quick">Find Match</ActionLink>
