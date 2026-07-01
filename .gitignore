@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# android (local IDE state and per-developer Firebase config)
+android/.idea/
+android/app/google-services.json
+android/local.properties

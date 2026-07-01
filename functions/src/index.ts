@@ -698,7 +698,7 @@ function validateJoinQueueInput(input: JoinQueueInput) {
     throw new HttpsError("invalid-argument", "Invalid displayName.");
   }
   if (
-    input.rematchWithUid !== undefined &&
+    input.rematchWithUid != null &&
     (typeof input.rematchWithUid !== "string" || input.rematchWithUid.length > 128)
   ) {
     throw new HttpsError("invalid-argument", "Invalid rematchWithUid.");

@@ -1,10 +1,15 @@
+import { Capacitor } from "@capacitor/core";
+import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 import {
   GoogleAuthProvider,
+  linkWithCredential,
   linkWithPopup,
   onAuthStateChanged,
   signInAnonymously,
+  signInWithCredential,
   signInWithPopup,
   signOut,
+  type Auth,
   type User,
 } from "firebase/auth";
 import { FirebaseError } from "firebase/app";
@@ -66,6 +71,11 @@ export async function signInAsGuest() {
 export async function signInWithGoogle() {
   const auth = getFirebaseAuth();
   if (!auth) throw new Error("Firebase is not configured.");
+
+  if (Capacitor.isNativePlatform()) {
+    return signInWithGoogleNative(auth);
+  }
+
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
 
@@ -86,9 +96,41 @@ export async function signInWithGoogle() {
   return signInWithPopup(auth, provider);
 }
 
+// On native, the Google account picker runs through the native Android
+// Firebase SDK (@capacitor-firebase/authentication), not a WebView popup.
+// The returned idToken is fed back into the JS SDK so onAuthStateChanged
+// (which only observes the JS SDK) fires like the web flow does.
+async function signInWithGoogleNative(auth: Auth) {
+  const { credential } = await FirebaseAuthentication.signInWithGoogle();
+  if (!credential?.idToken) throw new Error("Google sign-in was cancelled.");
+
+  const authCredential = GoogleAuthProvider.credential(
+    credential.idToken,
+    credential.accessToken,
+  );
+
+  const anonymousUser = auth.currentUser?.isAnonymous ? auth.currentUser : null;
+  if (anonymousUser) {
+    try {
+      return await linkWithCredential(anonymousUser, authCredential);
+    } catch (error) {
+      if (!(error instanceof FirebaseError) || error.code !== "auth/credential-already-in-use") {
+        throw error;
+      }
+    }
+  }
+
+  return signInWithCredential(auth, authCredential);
+}
+
 export async function signOutCurrentUser() {
   const auth = getFirebaseAuth();
   if (!auth) return;
+  if (Capacitor.isNativePlatform()) {
+    // Keeps the native Google account picker from silently re-selecting the
+    // same account on next sign-in instead of prompting.
+    await FirebaseAuthentication.signOut();
+  }
   await signOut(auth);
 }
 

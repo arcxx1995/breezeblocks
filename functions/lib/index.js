@@ -529,7 +529,7 @@ function validateJoinQueueInput(input) {
     if (!input.displayName || input.displayName.length > 80) {
         throw new https_1.HttpsError("invalid-argument", "Invalid displayName.");
     }
-    if (input.rematchWithUid !== undefined &&
+    if (input.rematchWithUid != null &&
         (typeof input.rematchWithUid !== "string" || input.rematchWithUid.length > 128)) {
         throw new https_1.HttpsError("invalid-argument", "Invalid rematchWithUid.");
     }
