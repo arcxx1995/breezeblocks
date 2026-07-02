@@ -1,6 +1,6 @@
 import { httpsCallable } from "firebase/functions";
-import { doc, onSnapshot } from "firebase/firestore";
-import { getFirebaseFunctions } from "@/lib/firebase/client";
+import { doc } from "firebase/firestore";
+import { getFirebaseFunctions, subscribeWithPollFallback } from "@/lib/firebase/client";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import {
   type JoinQueueInput,
@@ -57,17 +57,16 @@ export function subscribeToQueue(
   const db = getFirebaseDb();
   if (!db) return () => {};
 
-  return onSnapshot(
+  return subscribeWithPollFallback(
     doc(db, "matchmakingQueue", queueId),
-    (snapshot) => {
-      if (!snapshot.exists()) {
+    (data) => {
+      if (!data) {
         onChange(null);
         return;
       }
 
-      const data = snapshot.data();
       onChange({
-        queueId: snapshot.id,
+        queueId,
         queueName: data.queueName,
         status: data.status,
         gameId: data.gameId,

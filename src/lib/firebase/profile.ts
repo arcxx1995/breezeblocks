@@ -5,6 +5,7 @@ import {
   getDoc,
   getDocs,
   limit,
+  onSnapshot,
   orderBy,
   query,
   where,
@@ -122,6 +123,23 @@ export async function getPlayerProfile(userId: string) {
 
   const snapshot = await getDoc(doc(db, "users", userId));
   return snapshot.exists() ? toPlayerProfile(snapshot.data()) : null;
+}
+
+// Sparks/stats change server-side as matches complete, so the lobby/profile/
+// theme shop subscribe live instead of fetching once and going stale.
+export function subscribeToPlayerProfile(
+  userId: string,
+  onChange: (profile: PlayerProfile | null) => void,
+  onError: (error: Error) => void,
+) {
+  const db = getFirebaseDb();
+  if (!db) return () => {};
+
+  return onSnapshot(
+    doc(db, "users", userId),
+    (snapshot) => onChange(snapshot.exists() ? toPlayerProfile(snapshot.data()) : null),
+    onError,
+  );
 }
 
 export async function getMatchHistory(userId: string) {

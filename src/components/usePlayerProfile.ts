@@ -5,8 +5,8 @@ import { useAuth } from "@/components/AuthProvider";
 import {
   claimDailyLogin,
   getMatchHistory,
-  getPlayerProfile,
   selectTheme as selectThemeCallable,
+  subscribeToPlayerProfile,
   unlockTheme as unlockThemeCallable,
   type MatchHistoryEntry,
   type PlayerProfile,
@@ -33,22 +33,34 @@ export function usePlayerProfile() {
     const userId = player.uid;
     let ignore = false;
 
-    Promise.all([getPlayerProfile(userId), getMatchHistory(userId)])
-      .then(([nextProfile, nextHistory]) => {
-        if (ignore) return;
-        setProfileState({ userId, profile: nextProfile });
-        setHistoryState({ userId, history: nextHistory });
+    getMatchHistory(userId)
+      .then((nextHistory) => {
+        if (!ignore) setHistoryState({ userId, history: nextHistory });
       })
       .catch((caught: unknown) => {
-        if (ignore) return;
-        setErrorState({
-          userId,
-          message: caught instanceof Error ? caught.message : "Could not load profile.",
-        });
+        if (!ignore) {
+          setErrorState({
+            userId,
+            message: caught instanceof Error ? caught.message : "Could not load history.",
+          });
+        }
       });
+
+    const unsubscribe = subscribeToPlayerProfile(
+      userId,
+      (nextProfile) => {
+        if (ignore) return;
+        setProfileState({ userId, profile: nextProfile });
+      },
+      (caught) => {
+        if (ignore) return;
+        setErrorState({ userId, message: caught.message });
+      },
+    );
 
     return () => {
       ignore = true;
+      unsubscribe();
     };
   }, [isConfigured, player.provider, player.uid]);
 

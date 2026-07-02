@@ -9,6 +9,7 @@ import {
   Panel,
 } from "@/components/AppShell";
 import { useAuth } from "@/components/AuthProvider";
+import { isOnboardingComplete, markOnboardingComplete } from "@/lib/onboarding";
 
 export function EntryClient() {
   const router = useRouter();
@@ -17,12 +18,8 @@ export function EntryClient() {
   useEffect(() => {
     if (!isReady) return;
 
-    const onboardingComplete =
-      window.localStorage.getItem("breezeblocks:onboarding-complete") ===
-      "true";
-
     const timeout = window.setTimeout(() => {
-      router.replace(onboardingComplete ? "/lobby" : "/onboarding");
+      router.replace(isOnboardingComplete() ? "/lobby" : "/onboarding");
     }, 900);
 
     return () => window.clearTimeout(timeout);
@@ -36,9 +33,6 @@ export function EntryClient() {
             <p className="font-mono text-xs uppercase tracking-[0.18em] text-[#DCEEB1]">
               Breezeblocks
             </p>
-            <h1 className="mt-2 text-5xl font-[340] leading-none text-white">
-              Setting up the board
-            </h1>
           </div>
 
           <Panel tone="lilac">
@@ -57,14 +51,13 @@ export function EntryClient() {
         </section>
 
         <section className="space-y-3">
-          <p className="text-base leading-7 text-white/65">
-            {isReady
-              ? "Routing you to the right place..."
-              : "Restoring session and counting the dots..."}
-          </p>
           <div className="grid gap-2">
             <ActionLink href="/onboarding">Start</ActionLink>
-            <ActionLink href="/lobby" variant="secondary">
+            <ActionLink
+              href="/lobby"
+              variant="secondary"
+              onClick={markOnboardingComplete}
+            >
               Skip to lobby
             </ActionLink>
           </div>

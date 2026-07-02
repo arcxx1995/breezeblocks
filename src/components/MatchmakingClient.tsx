@@ -3,13 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  ActionLink,
   AppScreen,
   BrandHeader,
   DotBoardPreview,
   Panel,
 } from "@/components/AppShell";
-import { useAuth } from "@/components/AuthProvider";
 import { useMatchmaking } from "@/components/useMatchmaking";
 import { usePlayerProfile } from "@/components/usePlayerProfile";
 import { shouldShowInterstitial, showInterstitial } from "@/lib/ads/adGate";
@@ -33,18 +31,20 @@ export function MatchmakingClient({
   rematchWith?: string;
 }) {
   const router = useRouter();
-  const { player } = useAuth();
   const { profile } = usePlayerProfile();
   const isPremium = profile?.isPremium === true;
   const theme = getTheme(profile?.activeThemeId ?? "classic");
   const [elapsed, setElapsed] = useState(0);
   const [isCancelling, setIsCancelling] = useState(false);
-  const botRequestedRef = useRef(false);
+  const [botOfferDismissed, setBotOfferDismissed] = useState(false);
   const rematchFallbackRef = useRef(false);
+  const hasMatchedRef = useRef(false);
+  const cancellingRef = useRef(false);
   const matchMode = normalizeMode(mode);
   const matchmaking = useMatchmaking(matchMode);
   const {
     error,
+    isReady,
     queue,
     queueName,
     startBotMatch,
@@ -69,15 +69,21 @@ export function MatchmakingClient({
   }, []);
 
   useEffect(() => {
+    // Wait for the real, restored auth state before ever queueing — firing
+    // while auth is still resolving can catch a transient guest/anonymous
+    // identity that a moment later flips to the actual signed-in account,
+    // leaving a stray queue entry (and game) behind under the wrong identity.
+    if (!isReady) return;
     if (rematchWith) {
       startRematch(rematchWith);
       return;
     }
     startQueue();
-  }, [rematchWith, startQueue, startRematch]);
+  }, [isReady, rematchWith, startQueue, startRematch]);
 
   useEffect(() => {
     if (queueStatus === "matched" && queue?.gameId) {
+      hasMatchedRef.current = true;
       router.push(`/game?gameId=${encodeURIComponent(queue.gameId)}`);
       return;
     }
@@ -87,7 +93,7 @@ export function MatchmakingClient({
   }, [elapsed, queue, queueStatus, router]);
 
   useEffect(() => {
-    if (rematchFallbackRef.current) return;
+    if (rematchFallbackRef.current || cancellingRef.current) return;
     if (
       !rematchWith ||
       queueStatus !== "queued" ||
@@ -100,12 +106,12 @@ export function MatchmakingClient({
     startQueue();
   }, [elapsed, queue?.source, queueStatus, rematchWith, startQueue]);
 
-  useEffect(() => {
-    if (botRequestedRef.current) return;
-    if (queueStatus !== "queued" || elapsed < 20 || queue?.source !== "functions") return;
-    botRequestedRef.current = true;
-    startBotMatch();
-  }, [elapsed, queue?.source, queueStatus, startBotMatch]);
+  const showBotOffer =
+    !botOfferDismissed &&
+    !isCancelling &&
+    queueStatus === "queued" &&
+    elapsed >= 20 &&
+    queue?.source === "functions";
 
   return (
     <AppScreen>
@@ -127,46 +133,41 @@ export function MatchmakingClient({
           </div>
         </Panel>
 
-        <Panel className="space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-bold">Your color</span>
-            <span className="size-5 rounded-full bg-[#C5B0F4]" />
-          </div>
-          <p className="text-sm leading-6 text-white/65">
-            {player.provider === "google"
-              ? "Signed queue tries live players first, then starts a bot match if the wait runs long."
-              : "Anonymous queue tries guests first, then starts a bot match if the wait runs long."}
-          </p>
-          {error ? (
+        {error ? (
+          <Panel className="space-y-1">
             <p className="text-sm leading-6 text-[#F3C9B6]">{error}</p>
-          ) : null}
-        </Panel>
+          </Panel>
+        ) : null}
 
-        {elapsed >= 16 ? (
-          <Panel tone="cream" className="space-y-3">
-            <h2 className="text-xl font-bold">
-              {elapsed >= 20 ? "Adding a bot player." : "Taking longer than usual."}
-            </h2>
-            <div className="grid gap-2">
-              <ActionLink href="/matchmaking?mode=quick">Try Quick Match</ActionLink>
-              <ActionLink href="/matchmaking?mode=2p" variant="secondary">
-                Switch to 2-player mode
-              </ActionLink>
-            </div>
+        {showBotOffer ? (
+          <Panel className="space-y-3">
+            <p className="text-sm leading-6">No players found.</p>
+            <button
+              type="button"
+              onClick={() => {
+                if (cancellingRef.current) return;
+                setBotOfferDismissed(true);
+                startBotMatch();
+              }}
+              className="min-h-11 w-full rounded-full bg-black px-5 text-sm font-medium text-white transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#C5B0F4]"
+            >
+              Start bot match
+            </button>
           </Panel>
         ) : null}
 
         <div className="mt-auto grid gap-2">
-          <ActionLink href="/game?gameId=local">Open Local Prototype</ActionLink>
           <button
             type="button"
-            disabled={isCancelling}
+            disabled={isCancelling || queueStatus === "matched"}
             onClick={async () => {
+              cancellingRef.current = true;
               setIsCancelling(true);
               await stopQueue();
               if (shouldShowInterstitial("queue_to_lobby", isPremium)) {
                 await showInterstitial();
               }
+              if (hasMatchedRef.current) return;
               router.replace("/lobby");
             }}
             className="min-h-11 rounded-full border border-white/20 bg-[#111111] px-5 text-sm font-medium text-white transition hover:border-white/45 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#C5B0F4] disabled:cursor-not-allowed disabled:opacity-45"

@@ -8,6 +8,7 @@ import {
   Panel,
 } from "@/components/AppShell";
 import { AuthActionButton, AuthNotice } from "@/components/AuthActions";
+import { markOnboardingComplete } from "@/lib/onboarding";
 
 const slides = [
   {
@@ -58,10 +59,6 @@ export function OnboardingFlow() {
   const [index, setIndex] = useState(0);
   const slide = slides[index];
   const isLast = index === slides.length;
-
-  function markOnboardingComplete() {
-    window.localStorage.setItem("breezeblocks:onboarding-complete", "true");
-  }
 
   if (isLast) {
     return (
@@ -135,7 +132,11 @@ export function OnboardingFlow() {
           >
             {slide.cta}
           </button>
-          <ActionLink href="/lobby" variant="ghost">
+          <ActionLink
+            href="/lobby"
+            variant="ghost"
+            onClick={markOnboardingComplete}
+          >
             Skip
           </ActionLink>
         </div>

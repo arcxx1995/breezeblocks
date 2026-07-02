@@ -62,10 +62,24 @@ export function subscribeToAuthState(
   return onAuthStateChanged(auth, (user) => onChange(toAuthSnapshot(user)));
 }
 
+// Concurrent callers (an effect re-firing before the first sign-in settles,
+// a double click, React StrictMode's dev double-invoke) must not each mint a
+// fresh anonymous identity — that splits one browser session into multiple
+// uids and desyncs matchmaking. Share the in-flight sign-in instead.
+let pendingGuestSignIn: Promise<User> | null = null;
+
 export async function signInAsGuest() {
   const auth = getFirebaseAuth();
   if (!auth) throw new Error("Firebase is not configured.");
-  return signInAnonymously(auth);
+  if (auth.currentUser) return auth.currentUser;
+  if (!pendingGuestSignIn) {
+    pendingGuestSignIn = signInAnonymously(auth)
+      .then((credential) => credential.user)
+      .finally(() => {
+        pendingGuestSignIn = null;
+      });
+  }
+  return pendingGuestSignIn;
 }
 
 export async function signInWithGoogle() {
@@ -135,6 +149,17 @@ export async function signOutCurrentUser() {
 }
 
 export function getGuestName(seed = "124") {
-  const digits = seed.replace(/\D/g, "").slice(-3).padStart(3, "1");
+  const digits = String(hashSeed(seed) % 1000).padStart(3, "0");
   return `Guest Breeze ${digits}`;
+}
+
+// Firebase anonymous uids are mostly letters, so stripping non-digits (the
+// old approach) collapsed most guests onto the same padded suffix. Hashing
+// the full seed spreads the 3-digit suffix across the whole uid instead.
+function hashSeed(seed: string): number {
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+  }
+  return hash;
 }

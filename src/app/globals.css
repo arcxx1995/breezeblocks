@@ -44,18 +44,22 @@ button {
   height: min(var(--phone-preview-height), calc(100dvh - 32px));
   max-width: 100%;
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   background: var(--background);
   color: var(--foreground);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 34px;
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+}
+
+.app-phone-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
 }
 
-.app-phone-screen::-webkit-scrollbar {
+.app-phone-scroll::-webkit-scrollbar {
   display: none;
 }
 

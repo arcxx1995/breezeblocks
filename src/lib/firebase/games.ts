@@ -1,11 +1,14 @@
 import {
   doc,
   getDoc,
-  onSnapshot,
   type DocumentData,
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { getFirebaseDb, getFirebaseFunctions } from "@/lib/firebase/client";
+import {
+  getFirebaseDb,
+  getFirebaseFunctions,
+  subscribeWithPollFallback,
+} from "@/lib/firebase/client";
 import type { LineOrientation } from "@/lib/game/engine";
 
 export type OnlineGameSnapshot = {
@@ -37,15 +40,15 @@ export function subscribeToOnlineGame(
   if (!db) return () => {};
 
   const gameRef = doc(db, "games", gameId);
-  return onSnapshot(
+  return subscribeWithPollFallback(
     gameRef,
-    (snapshot) => {
-      if (!snapshot.exists()) {
+    (data) => {
+      if (!data) {
         onChange({ game: null, players: [], lines: [], boxes: [] });
         return;
       }
 
-      onChange(compactGameSnapshot(snapshot.id, snapshot.data()));
+      onChange(compactGameSnapshot(gameId, data));
     },
     onError,
   );

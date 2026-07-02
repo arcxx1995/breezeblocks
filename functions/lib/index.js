@@ -62,7 +62,10 @@ exports.joinQueue = (0, https_1.onCall)(callableOptions, async (request) => {
             .orderBy("joinedAt", "asc")
             .limit(matchmakingQueryLimit));
         const now = firestore_1.Timestamp.now();
-        await assertNoConflictingQueue(transaction, uid, queueName);
+        // Must run before assertNoConflictingQueue, which can write (expire
+        // stale queue docs) — Firestore transactions require all reads first.
+        const { rating: requesterRating, botDifficulty } = await resolveRequesterMatchProfile(transaction, input.authType, uid);
+        await assertNoConflictingQueue(transaction, uid, queueName, now);
         if (snapshot.exists) {
             const queue = snapshot.data();
             const isFreshQueue = queue?.status === "queued" &&
@@ -102,7 +105,9 @@ exports.joinQueue = (0, https_1.onCall)(callableOptions, async (request) => {
                         restrictedToUid: input.rematchWithUid ?? null,
                         updatedAt: now,
                     },
+                    requesterRating: typeof queue?.rating === "number" ? queue.rating : requesterRating,
                     allowBots: input.allowBots === true,
+                    botDifficulty,
                 });
             }
         }
@@ -114,6 +119,7 @@ exports.joinQueue = (0, https_1.onCall)(callableOptions, async (request) => {
             userId: input.authType === "signed" ? uid : null,
             guestId: input.authType === "anonymous" ? uid : null,
             displayName: input.displayName,
+            rating: requesterRating,
             status: "queued",
             joinedAt: now,
             updatedAt: now,
@@ -128,7 +134,9 @@ exports.joinQueue = (0, https_1.onCall)(callableOptions, async (request) => {
             now,
             requesterQueueRef: queueRef,
             requesterQueueData: queueData,
+            requesterRating,
             allowBots: input.allowBots === true,
+            botDifficulty,
         });
     });
     return result;
@@ -314,7 +322,7 @@ exports.claimBotMove = (0, https_1.onCall)(callableOptions, async (request) => {
         }
         const lineOwners = normalizeLineOwners(game.lineOwners);
         const boxOwners = normalizeBoxOwners(game.boxOwners);
-        const botLine = chooseBotLine(lineOwners, boxOwners);
+        const botLine = (0, gameRules_1.chooseBotLine)(lineOwners, boxOwners, currentPlayer.botDifficulty ?? "medium");
         if (!botLine) {
             throw new https_1.HttpsError("failed-precondition", "No bot moves are available.");
         }
@@ -335,7 +343,7 @@ exports.claimBotMove = (0, https_1.onCall)(callableOptions, async (request) => {
     });
     return result;
 });
-function createBotPlayer(index) {
+function createBotPlayer(index, botDifficulty) {
     return {
         playerId: `bot_${index + 1}`,
         userId: null,
@@ -344,13 +352,34 @@ function createBotPlayer(index) {
         avatarUrl: null,
         color: playerColors[index],
         score: 0,
+        rating: gameRules_1.DEFAULT_RATING,
         isAnonymous: true,
         isBot: true,
+        botDifficulty,
         connectionStatus: "connected",
         consecutiveSkips: 0,
         turnOrder: index,
         queueEntryId: `bot_${index + 1}`,
     };
+}
+// Resolves both the skill rating used for player-vs-player matching and the
+// bot tier used when a queue falls back to bot fill. Guests have no
+// persistent profile, so they always get the default rating and the middle
+// bot tier. Uses a transaction read so it composes with joinQueue's existing
+// transaction (all reads must precede writes).
+async function resolveRequesterMatchProfile(transaction, authType, uid) {
+    if (authType !== "signed")
+        return { rating: gameRules_1.DEFAULT_RATING, botDifficulty: "medium" };
+    const snapshot = await transaction.get(db.collection("users").doc(uid));
+    const data = snapshot.data();
+    const rating = typeof data?.rating === "number" ? data.rating : gameRules_1.DEFAULT_RATING;
+    const gamesPlayed = typeof data?.totalGamesPlayed === "number" ? data.totalGamesPlayed : 0;
+    const wins = typeof data?.totalWins === "number" ? data.totalWins : 0;
+    if (gamesPlayed < 5)
+        return { rating, botDifficulty: "easy" };
+    const winRate = wins / gamesPlayed;
+    const botDifficulty = winRate < 0.4 ? "easy" : winRate <= 0.65 ? "medium" : "hard";
+    return { rating, botDifficulty };
 }
 exports.ensureSignedProfile = (0, https_1.onCall)(callableOptions, async (request) => {
     const uid = requireUid(request.auth?.uid);
@@ -393,6 +422,7 @@ exports.ensureSignedProfile = (0, https_1.onCall)(callableOptions, async (reques
             totalGamesPlayed: 0,
             totalBoxesWon: 0,
             highestBoxesSingleGame: 0,
+            rating: gameRules_1.DEFAULT_RATING,
             isPremium: false,
             sparks: 0,
             unlockedThemes: [defaultThemeId],
@@ -563,12 +593,43 @@ function queueDocToPlayer(queueEntryId, queue, index) {
         avatarUrl: null,
         color: playerColors[index],
         score: 0,
+        rating: entryRating(queue),
         isAnonymous: queue.authType === "anonymous",
         connectionStatus: "connected",
         consecutiveSkips: 0,
         turnOrder: index,
         queueEntryId,
     };
+}
+// How far apart in rating two players can be to match. Grows with how long
+// the candidate has already been waiting, so a lone mismatched pair still
+// ends up matched with each other instead of both waiting out the clock and
+// getting bot-filled separately.
+function ratingBandForWaitMillis(waitMillis) {
+    return 150 + (waitMillis / 1000) * 25;
+}
+function entryRating(data) {
+    return typeof data.rating === "number" ? data.rating : gameRules_1.DEFAULT_RATING;
+}
+// Picks the requester plus the closest-rating opponents currently waiting,
+// widening per-candidate tolerance by how long that candidate has waited.
+function selectRatingMatchedEntries(waitingEntries, requesterQueueRef, requesterRating, requestedPlayerCount, now) {
+    const requesterEntry = requesterQueueRef
+        ? waitingEntries.find((entry) => entry.ref.path === requesterQueueRef.path)
+        : undefined;
+    if (!requesterEntry)
+        return waitingEntries.slice(0, requestedPlayerCount);
+    const eligibleOpponents = waitingEntries
+        .filter((entry) => entry !== requesterEntry)
+        .filter((entry) => {
+        const waitMillis = now.toMillis() - toMillis(entry.data.joinedAt);
+        return Math.abs(entryRating(entry.data) - requesterRating) <= ratingBandForWaitMillis(waitMillis);
+    })
+        .sort((a, b) => {
+        const distanceDiff = Math.abs(entryRating(a.data) - requesterRating) - Math.abs(entryRating(b.data) - requesterRating);
+        return distanceDiff !== 0 ? distanceDiff : toMillis(a.data.joinedAt) - toMillis(b.data.joinedAt);
+    });
+    return [requesterEntry, ...eligibleOpponents.slice(0, requestedPlayerCount - 1)];
 }
 function isEligiblePairing(entryData, requesterUid, requesterRestrictedToUid) {
     const entryUid = entryData.userId ?? entryData.guestId ?? null;
@@ -581,7 +642,7 @@ function isEligiblePairing(entryData, requesterUid, requesterRestrictedToUid) {
         return false;
     return true;
 }
-async function assertNoConflictingQueue(transaction, uid, queueName) {
+async function assertNoConflictingQueue(transaction, uid, queueName, now) {
     const otherQueueRefs = allQueueNames
         .filter((name) => name !== queueName)
         .map((name) => db.collection("matchmakingQueue").doc(`${name}_${uid}`));
@@ -591,6 +652,18 @@ async function assertNoConflictingQueue(transaction, uid, queueName) {
             continue;
         const otherQueue = otherSnapshot.data();
         if (otherQueue?.status === "queued") {
+            // A closed tab/app switch never runs the client's unmount cancel, so a
+            // "queued" entry in another mode can outlive the session. Without this
+            // staleness check it would block every future joinQueue call forever.
+            const isStale = now.toMillis() - toMillis(otherQueue.joinedAt) >= staleQueueAgeMillis;
+            if (isStale) {
+                transaction.update(otherSnapshot.ref, {
+                    status: "expired",
+                    expiredAt: now,
+                    expireAt: firestore_1.Timestamp.fromMillis(now.toMillis() + queueTtlMillis),
+                });
+                continue;
+            }
             throw new https_1.HttpsError("failed-precondition", "You are already queued in a different match mode. Cancel that queue first.");
         }
         if (otherQueue?.status === "matched") {
@@ -604,7 +677,7 @@ async function assertNoConflictingQueue(transaction, uid, queueName) {
         }
     }
 }
-function attemptCreateMatchInTransaction({ transaction, waitingDocs, queueName, requestedPlayerCount, now, requesterQueueRef, requesterQueueData, allowBots = false, }) {
+function attemptCreateMatchInTransaction({ transaction, waitingDocs, queueName, requestedPlayerCount, now, requesterQueueRef, requesterQueueData, requesterRating = gameRules_1.DEFAULT_RATING, allowBots = false, botDifficulty = "medium", }) {
     const cutoffMillis = now.toMillis() - staleQueueAgeMillis;
     const staleQueueDocs = waitingDocs.filter((doc) => toMillis(doc.data().joinedAt) < cutoffMillis);
     const freshWaitingDocs = waitingDocs.filter((doc) => toMillis(doc.data().joinedAt) >= cutoffMillis);
@@ -652,11 +725,11 @@ function attemptCreateMatchInTransaction({ transaction, waitingDocs, queueName, 
             ...waitingEntries.filter((entry) => entry.ref.path === requesterQueueRef.path),
             ...waitingEntries.filter((entry) => entry.ref.path !== requesterQueueRef.path),
         ].slice(0, requestedPlayerCount)
-        : waitingEntries.slice(0, requestedPlayerCount);
+        : selectRatingMatchedEntries(waitingEntries, requesterQueueRef, requesterRating, requestedPlayerCount, now);
     const requesterWasMatched = requesterQueueRef
         ? selectedQueueEntries.some((entry) => entry.ref.path === requesterQueueRef.path)
         : true;
-    if (!requesterWasMatched) {
+    if (!requesterWasMatched || (!allowBots && selectedQueueEntries.length < requestedPlayerCount)) {
         if (requesterQueueRef && requesterQueueData && !requesterAlreadyWaiting) {
             transaction.set(requesterQueueRef, requesterQueueData);
         }
@@ -668,7 +741,7 @@ function attemptCreateMatchInTransaction({ transaction, waitingDocs, queueName, 
     }
     const selectedPlayers = selectedQueueEntries.map((entry, index) => queueDocToPlayer(entry.id, entry.data, index));
     while (allowBots && selectedPlayers.length < requestedPlayerCount) {
-        selectedPlayers.push(createBotPlayer(selectedPlayers.length));
+        selectedPlayers.push(createBotPlayer(selectedPlayers.length, botDifficulty));
     }
     const firstPlayer = selectedPlayers[0];
     const gameRef = db.collection("games").doc();
@@ -767,31 +840,6 @@ async function applyMoveInTransaction({ transaction, gameRef, game, players, cur
     }
     return { completedBoxIds, status: gameComplete ? "completed" : "active" };
 }
-function chooseBotLine(lineOwners, boxOwners) {
-    const openLines = Object.entries(lineOwners)
-        .filter(([, owner]) => owner == null)
-        .map(([id]) => parseLineId(id))
-        .filter((line) => Boolean(line));
-    return (openLines.find((line) => {
-        const nextLineOwners = {
-            ...lineOwners,
-            [(0, gameRules_1.lineId)(line.orientation, line.row, line.col)]: 0,
-        };
-        return (0, gameRules_1.getAdjacentBoxIds)(line.orientation, line.row, line.col).some((candidateBoxId) => boxOwners[candidateBoxId] == null &&
-            (0, gameRules_1.isBoxComplete)(candidateBoxId, nextLineOwners));
-    }) ?? openLines[0]);
-}
-function parseLineId(id) {
-    const [prefix, rowValue, colValue] = id.split("-");
-    const orientation = prefix === "v" ? "vertical" : prefix === "h" ? "horizontal" : null;
-    if (!orientation)
-        return null;
-    return {
-        orientation,
-        row: Number(rowValue),
-        col: Number(colValue),
-    };
-}
 function normalizeGamePlayers(players) {
     if (!Array.isArray(players)) {
         throw new https_1.HttpsError("failed-precondition", "Game state is not compacted. Start a new match.");
@@ -831,6 +879,8 @@ function isAlreadyExistsError(error) {
     return candidate.code === 6 || candidate.code === "already-exists";
 }
 function writeSignedPlayerCompletionStats(transaction, gameId, finalPlayers, signedPlayers, signedUserSnapshots, winnerPlayerIds, completedAt) {
+    if (finalPlayers.some((player) => player.isBot))
+        return;
     const isDraw = winnerPlayerIds.length !== 1;
     const highScore = Math.max(...finalPlayers.map((player) => Number(player.score ?? 0)));
     signedPlayers.forEach((player, index) => {
@@ -840,6 +890,15 @@ function writeSignedPlayerCompletionStats(transaction, gameId, finalPlayers, sig
         const won = !isDraw && winnerPlayerIds.includes(player.playerId);
         const lost = !isDraw && !won;
         const currentHighest = Number(userSnapshot.exists ? userSnapshot.data()?.highestBoxesSingleGame ?? 0 : 0);
+        const currentRating = Number(userSnapshot.exists ? userSnapshot.data()?.rating ?? gameRules_1.DEFAULT_RATING : gameRules_1.DEFAULT_RATING);
+        const opponents = finalPlayers
+            .filter((other) => other.playerId !== player.playerId)
+            .map((other) => {
+            const otherScore = Number(other.score ?? 0);
+            const result = score > otherScore ? 1 : score < otherScore ? 0 : 0.5;
+            return { rating: Number(other.rating ?? gameRules_1.DEFAULT_RATING), result };
+        });
+        const ratingDelta = (0, gameRules_1.computeRatingDelta)(currentRating, opponents);
         const sparksEarned = completionBaseSparks + (won ? winBonusSparks : 0) + score * sparksPerBoxWon;
         transaction.set(userRef, {
             userId: player.userId,
@@ -851,6 +910,7 @@ function writeSignedPlayerCompletionStats(transaction, gameId, finalPlayers, sig
             totalDraws: firestore_1.FieldValue.increment(isDraw ? 1 : 0),
             totalBoxesWon: firestore_1.FieldValue.increment(score),
             highestBoxesSingleGame: Math.max(currentHighest, score),
+            rating: currentRating + ratingDelta,
             sparks: firestore_1.FieldValue.increment(sparksEarned),
             updatedAt: completedAt,
         }, { merge: true });

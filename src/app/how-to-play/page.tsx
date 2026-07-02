@@ -32,7 +32,7 @@ const rules = [
 
 export default function HowToPlayPage() {
   return (
-    <AppScreen>
+    <AppScreen nav={<BottomNav />}>
       <ThemedBrandHeader title="How to Play" />
 
       <section className="space-y-3 py-4">
@@ -54,8 +54,6 @@ export default function HowToPlayPage() {
 
         <ActionLink href="/game?gameId=local">Try Local Match</ActionLink>
       </section>
-
-      <BottomNav />
     </AppScreen>
   );
 }

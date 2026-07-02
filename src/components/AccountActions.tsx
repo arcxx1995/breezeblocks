@@ -13,12 +13,7 @@ export function AccountActions() {
           Sign out
         </AuthActionButton>
       ) : (
-        <>
-          <AuthActionButton action="google">Sign in</AuthActionButton>
-          <AuthActionButton action="anonymous" variant="secondary">
-            Continue as guest
-          </AuthActionButton>
-        </>
+        <AuthActionButton action="google">Sign in</AuthActionButton>
       )}
       <AuthNotice dark />
     </div>

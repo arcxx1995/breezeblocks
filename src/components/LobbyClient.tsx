@@ -62,14 +62,15 @@ export function LobbyClient() {
   }
 
   return (
-    <AppScreen>
+    <AppScreen scrollable={false} nav={<BottomNav accentColor={theme.accent} />}>
       <BrandHeader
         title="Lobby"
         accentColor={theme.accent}
         action={
-          <ActionLink href="/settings" variant="secondary">
-            Settings
-          </ActionLink>
+          <span className="flex h-9 items-center gap-1.5 rounded-full bg-white/10 px-3 font-mono text-sm font-medium text-white">
+            <span aria-hidden>⚡</span>
+            {profile?.sparks ?? 0}
+          </span>
         }
       />
 
@@ -146,23 +147,7 @@ export function LobbyClient() {
           ))}
         </section>
 
-        <section className="grid grid-cols-2 gap-2">
-          <Panel className="space-y-3">
-            <h2 className="text-lg font-bold">How to Play</h2>
-            <ActionLink href="/how-to-play" variant="ghost">
-              Open
-            </ActionLink>
-          </Panel>
-          <Panel className="space-y-3">
-            <h2 className="text-lg font-bold">Profile</h2>
-            <ActionLink href="/profile" variant="ghost">
-              Open
-            </ActionLink>
-          </Panel>
-        </section>
       </section>
-
-      <BottomNav />
     </AppScreen>
   );
 }

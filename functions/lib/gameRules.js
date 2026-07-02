@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.TURN_DURATION_SECONDS = exports.BOX_COLS = exports.BOX_ROWS = exports.DOT_COLS = exports.DOT_ROWS = void 0;
+exports.DEFAULT_RATING = exports.TURN_DURATION_SECONDS = exports.BOX_COLS = exports.BOX_ROWS = exports.DOT_COLS = exports.DOT_ROWS = void 0;
 exports.lineId = lineId;
 exports.boxId = boxId;
 exports.createInitialLines = createInitialLines;
@@ -12,6 +12,9 @@ exports.getCompletedBoxes = getCompletedBoxes;
 exports.getNextActivePlayer = getNextActivePlayer;
 exports.getAdjacentBoxIds = getAdjacentBoxIds;
 exports.isBoxComplete = isBoxComplete;
+exports.parseLineId = parseLineId;
+exports.computeRatingDelta = computeRatingDelta;
+exports.chooseBotLine = chooseBotLine;
 exports.DOT_ROWS = 10;
 exports.DOT_COLS = 10;
 exports.BOX_ROWS = 9;
@@ -108,4 +111,199 @@ function isBoxComplete(id, lineOwners) {
         lineOwners[lineId("horizontal", row + 1, col)] != null &&
         lineOwners[lineId("vertical", row, col)] != null &&
         lineOwners[lineId("vertical", row, col + 1)] != null);
+}
+function parseLineId(id) {
+    const [prefix, rowValue, colValue] = id.split("-");
+    const orientation = prefix === "v" ? "vertical" : prefix === "h" ? "horizontal" : null;
+    if (!orientation)
+        return null;
+    return { orientation, row: Number(rowValue), col: Number(colValue) };
+}
+function getOpenLines(lineOwners) {
+    return Object.entries(lineOwners)
+        .filter(([, owner]) => owner == null)
+        .map(([id]) => parseLineId(id))
+        .filter((line) => Boolean(line));
+}
+function boxSides(id) {
+    const [, rowValue, colValue] = id.split("-");
+    const row = Number(rowValue);
+    const col = Number(colValue);
+    return [
+        { orientation: "horizontal", row, col },
+        { orientation: "horizontal", row: row + 1, col },
+        { orientation: "vertical", row, col },
+        { orientation: "vertical", row, col: col + 1 },
+    ];
+}
+function openBoxSides(id, lineOwners) {
+    return boxSides(id).filter((side) => lineOwners[lineId(side.orientation, side.row, side.col)] == null);
+}
+function openBoxIds(boxOwners) {
+    return Object.entries(boxOwners)
+        .filter(([, owner]) => owner == null)
+        .map(([id]) => id);
+}
+function completesABox(line, lineOwners, boxOwners) {
+    const hypothetical = { ...lineOwners, [lineId(line.orientation, line.row, line.col)]: 0 };
+    return getAdjacentBoxIds(line.orientation, line.row, line.col).some((id) => boxOwners[id] == null && isBoxComplete(id, hypothetical));
+}
+// Uncaptured boxes touching this line, excluding the box we're standing on.
+function adjacentOpenBoxes(line, boxOwners, exceptBoxId) {
+    return getAdjacentBoxIds(line.orientation, line.row, line.col).filter((id) => boxOwners[id] == null && id !== exceptBoxId);
+}
+function findCaptureLineForBox(boxId_, lineOwners) {
+    return openBoxSides(boxId_, lineOwners)[0] ?? null;
+}
+// Walk the chain/loop of degree-<=2 boxes reachable from startBoxId. A
+// junction box (degree 3+) is treated as the boundary of the chain, same
+// as a board edge.
+function classifyRegion(startBoxId, lineOwners, boxOwners) {
+    const visited = new Set();
+    const queue = [startBoxId];
+    let isLoop = true;
+    while (queue.length > 0) {
+        const current = queue.pop();
+        if (visited.has(current))
+            continue;
+        visited.add(current);
+        for (const side of openBoxSides(current, lineOwners)) {
+            const neighbors = adjacentOpenBoxes(side, boxOwners, current);
+            if (neighbors.length === 0) {
+                isLoop = false;
+                continue;
+            }
+            const neighborId = neighbors[0];
+            if (openBoxSides(neighborId, lineOwners).length > 2) {
+                isLoop = false;
+                continue;
+            }
+            if (!visited.has(neighborId))
+                queue.push(neighborId);
+        }
+    }
+    return { boxIds: [...visited], isLoop };
+}
+// The "double-cross" move: decline the remaining capture(s) in a chain/loop
+// and instead draw the one line that hands the rest back to the opponent
+// as a package deal, forcing them to spend a move re-opening play.
+function findHandbackLine(regionBoxIds, lineOwners, boxOwners, isLoop) {
+    const regionSet = new Set(regionBoxIds);
+    const seen = new Set();
+    const regionLines = [];
+    for (const boxId_ of regionBoxIds) {
+        for (const side of openBoxSides(boxId_, lineOwners)) {
+            const key = lineId(side.orientation, side.row, side.col);
+            if (!seen.has(key)) {
+                seen.add(key);
+                regionLines.push(side);
+            }
+        }
+    }
+    if (!isLoop) {
+        const dangling = regionLines.find((line) => {
+            const allAdjacent = getAdjacentBoxIds(line.orientation, line.row, line.col);
+            const openAdjacent = allAdjacent.filter((id) => boxOwners[id] == null);
+            return openAdjacent.length <= 1;
+        });
+        return dangling ?? regionLines[0] ?? null;
+    }
+    const nonHotLine = regionLines.find((line) => {
+        const touching = adjacentOpenBoxes(line, boxOwners).filter((id) => regionSet.has(id));
+        return touching.every((id) => openBoxSides(id, lineOwners).length !== 1);
+    });
+    return nonHotLine ?? regionLines[0] ?? null;
+}
+function findCapturingMove(lineOwners, boxOwners, difficulty) {
+    const openIds = openBoxIds(boxOwners);
+    const hotBoxId = openIds.find((id) => openBoxSides(id, lineOwners).length === 1);
+    if (!hotBoxId)
+        return null;
+    if (difficulty === "hard") {
+        const region = classifyRegion(hotBoxId, lineOwners, boxOwners);
+        const cutoff = region.isLoop ? 4 : 2;
+        const remainingElsewhere = openIds.length - region.boxIds.length;
+        if (remainingElsewhere > 0 && region.boxIds.length === cutoff) {
+            return findHandbackLine(region.boxIds, lineOwners, boxOwners, region.isLoop);
+        }
+    }
+    return findCaptureLineForBox(hotBoxId, lineOwners);
+}
+function isSafeLine(line, lineOwners, boxOwners) {
+    const hypothetical = { ...lineOwners, [lineId(line.orientation, line.row, line.col)]: 0 };
+    return getAdjacentBoxIds(line.orientation, line.row, line.col).every((id) => {
+        if (boxOwners[id] != null)
+            return true;
+        return openBoxSides(id, hypothetical).length !== 1;
+    });
+}
+// How many boxes would the opponent be able to run off with if this line
+// is played (full greedy cascade, no double-crossing on their end).
+function countGreedyCaptureFrom(lineOwners, boxOwners) {
+    let lo = lineOwners;
+    let bo = boxOwners;
+    let count = 0;
+    while (true) {
+        const ids = openBoxIds(bo);
+        const hotId = ids.find((id) => openBoxSides(id, lo).length === 1);
+        if (!hotId)
+            break;
+        const line = findCaptureLineForBox(hotId, lo);
+        if (!line)
+            break;
+        lo = { ...lo, [lineId(line.orientation, line.row, line.col)]: 0 };
+        for (const id of ids) {
+            if (bo[id] == null && isBoxComplete(id, lo)) {
+                bo = { ...bo, [id]: 0 };
+                count += 1;
+            }
+        }
+    }
+    return count;
+}
+function pickSmallestSacrifice(openLines, lineOwners, boxOwners) {
+    let best = openLines[0];
+    let bestCount = Infinity;
+    for (const line of openLines) {
+        const lo = { ...lineOwners, [lineId(line.orientation, line.row, line.col)]: 0 };
+        const count = countGreedyCaptureFrom(lo, boxOwners);
+        if (count < bestCount) {
+            bestCount = count;
+            best = line;
+            if (bestCount === 0)
+                break;
+        }
+    }
+    return best;
+}
+// --- Skill rating -------------------------------------------------------
+//
+// Elo, generalized to 2-4 player games by treating a match as a round-robin
+// of pairwise results (win/loss/draw by final score) and averaging the
+// per-pair delta so K stays meaningful regardless of player count.
+exports.DEFAULT_RATING = 1000;
+const ELO_K = 32;
+function computeRatingDelta(playerRating, opponents) {
+    if (opponents.length === 0)
+        return 0;
+    const totalDelta = opponents.reduce((sum, opponent) => {
+        const expected = 1 / (1 + 10 ** ((opponent.rating - playerRating) / 400));
+        return sum + (opponent.result - expected);
+    }, 0);
+    return Math.round((ELO_K * totalDelta) / opponents.length);
+}
+function chooseBotLine(lineOwners, boxOwners, difficulty = "medium") {
+    const openLines = getOpenLines(lineOwners);
+    if (openLines.length === 0)
+        return null;
+    if (difficulty === "easy") {
+        return openLines.find((line) => completesABox(line, lineOwners, boxOwners)) ?? openLines[0];
+    }
+    const capturingMove = findCapturingMove(lineOwners, boxOwners, difficulty);
+    if (capturingMove)
+        return capturingMove;
+    const safeLines = openLines.filter((line) => isSafeLine(line, lineOwners, boxOwners));
+    if (safeLines.length > 0)
+        return safeLines[0];
+    return pickSmallestSacrifice(openLines, lineOwners, boxOwners);
 }
