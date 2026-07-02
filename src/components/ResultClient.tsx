@@ -193,18 +193,24 @@ export function ResultClient({ fallbackGameId = "local" }: { fallbackGameId?: st
         <div className="mt-auto grid gap-2">
           {isGatedByAd ? null : (
             <>
-              {isOnlineMatchOver && opponent ? (
+              {isOnlineMatchOver && opponent && players.length === 2 ? (
+                // Single-opponent rematch only makes sense head-to-head; for 3-4p
+                // re-queue the same mode instead of targeting one player.
                 <ActionLink
                   href={`/matchmaking?mode=${rematchMode}&rematchWith=${encodeURIComponent(opponent.playerId)}`}
                 >
                   Rematch {opponent.displayName}
                 </ActionLink>
+              ) : isOnlineMatchOver && players.length > 2 ? (
+                <ActionLink href={`/matchmaking?mode=${rematchMode}`}>
+                  Rematch ({players.length}P)
+                </ActionLink>
               ) : null}
               <ActionLink
                 href="/matchmaking?mode=quick"
-                variant={isOnlineMatchOver && opponent ? "secondary" : "primary"}
+                variant={isOnlineMatchOver ? "secondary" : "primary"}
               >
-                {isOnlineMatchOver && opponent ? "New Match" : "Play Again"}
+                {isOnlineMatchOver ? "New Match" : "Play Again"}
               </ActionLink>
             </>
           )}

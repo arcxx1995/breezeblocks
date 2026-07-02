@@ -15,6 +15,10 @@ import type { MatchMode } from "@/lib/matchmaking/types";
 import { getTheme } from "@/lib/themes";
 
 const REMATCH_FALLBACK_SECONDS = 12;
+// Offer a bot match sooner (was 20s), but never auto-fill — the user chooses
+// bots or "keep waiting", which snoozes the offer and keeps searching for humans.
+const BOT_OFFER_SECONDS = 10;
+const KEEP_WAITING_SECONDS = 15;
 
 const statusCopy = [
   "Finding players...",
@@ -37,6 +41,7 @@ export function MatchmakingClient({
   const [elapsed, setElapsed] = useState(0);
   const [isCancelling, setIsCancelling] = useState(false);
   const [botOfferDismissed, setBotOfferDismissed] = useState(false);
+  const [botOfferSnoozeUntil, setBotOfferSnoozeUntil] = useState(0);
   const rematchFallbackRef = useRef(false);
   const hasMatchedRef = useRef(false);
   const cancellingRef = useRef(false);
@@ -81,9 +86,9 @@ export function MatchmakingClient({
   useEffect(() => {
     if (rematchWith || queueStatus !== "queued" || queue?.source !== "functions") return;
     const interval = window.setInterval(() => {
-      // Stop once the bot offer is available at 20s — past there it's the user's
-      // call, not more auto-polling.
-      if (cancellingRef.current || hasMatchedRef.current || elapsedRef.current >= 20) return;
+      // Keep re-running joinQueue the whole time the player is queued so "keep
+      // waiting" actually keeps searching for humans instead of idling.
+      if (cancellingRef.current || hasMatchedRef.current) return;
       startQueue();
     }, 6000);
     return () => window.clearInterval(interval);
@@ -131,7 +136,7 @@ export function MatchmakingClient({
     !botOfferDismissed &&
     !isCancelling &&
     queueStatus === "queued" &&
-    elapsed >= 20 &&
+    elapsed >= Math.max(BOT_OFFER_SECONDS, botOfferSnoozeUntil) &&
     queue?.source === "functions";
 
   return (
@@ -162,7 +167,7 @@ export function MatchmakingClient({
 
         {showBotOffer ? (
           <Panel className="space-y-3">
-            <p className="text-sm leading-6">No players found.</p>
+            <p className="text-sm leading-6">No players found yet.</p>
             <button
               type="button"
               onClick={() => {
@@ -173,6 +178,13 @@ export function MatchmakingClient({
               className="min-h-11 w-full rounded-full bg-black px-5 text-sm font-medium text-white transition hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#C5B0F4]"
             >
               Start bot match
+            </button>
+            <button
+              type="button"
+              onClick={() => setBotOfferSnoozeUntil(elapsed + KEEP_WAITING_SECONDS)}
+              className="min-h-11 w-full rounded-full border border-white/20 bg-[#111111] px-5 text-sm font-medium text-white transition hover:border-white/45 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#C5B0F4]"
+            >
+              Keep waiting for players
             </button>
           </Panel>
         ) : null}

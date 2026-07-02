@@ -40,6 +40,7 @@ type BoardPoint = {
 };
 
 export function BreezeblocksGame({ gameId = "local" }: { gameId?: string }) {
+  const [playerCount, setPlayerCount] = useState(2);
   const [game, setGame] = useState<GameState>(() => createInitialGame());
   const [now, setNow] = useState(() => Date.now());
   const [lastMoveId, setLastMoveId] = useState<string | null>(null);
@@ -82,11 +83,15 @@ export function BreezeblocksGame({ gameId = "local" }: { gameId?: string }) {
     setNow(Date.now());
   }
 
-  function resetGame() {
-    const startedAt = Date.now();
-    setGame(createInitialGame(startedAt));
+  function resetGame(count: number, startedAt: number) {
+    setGame(createInitialGame(startedAt, count));
     setLastMoveId(null);
     setNow(startedAt);
+  }
+
+  function changePlayerCount(count: number, startedAt: number) {
+    setPlayerCount(count);
+    resetGame(count, startedAt);
   }
 
   const winners = game.players.filter((player) =>
@@ -110,12 +115,34 @@ export function BreezeblocksGame({ gameId = "local" }: { gameId?: string }) {
           </div>
           <button
             type="button"
-            onClick={resetGame}
+            onClick={() => resetGame(playerCount, Date.now())}
             className="h-10 rounded-full bg-white px-5 text-sm font-medium text-black transition hover:bg-[#F4ECD6] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#C5B0F4]"
           >
             Reset
           </button>
         </header>
+
+        <div className="flex items-center gap-2 pb-1">
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-white/40">
+            Players
+          </span>
+          <div className="flex gap-1">
+            {[2, 3, 4].map((count) => (
+              <button
+                key={count}
+                type="button"
+                onClick={() => changePlayerCount(count, Date.now())}
+                className={`h-8 w-8 rounded-full text-sm font-medium transition ${
+                  playerCount === count
+                    ? "bg-white text-black"
+                    : "border border-white/20 bg-[#111111] text-white hover:border-white/45"
+                }`}
+              >
+                {count}
+              </button>
+            ))}
+          </div>
+        </div>
 
         <section className="grid grid-cols-2 gap-2 py-3">
           {game.players.map((player, index) => (

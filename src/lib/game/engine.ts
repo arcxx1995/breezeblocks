@@ -60,25 +60,23 @@ export function boxId(row: number, col: number) {
   return `b-${row}-${col}`;
 }
 
-export function createInitialGame(now = Date.now()): GameState {
-  const players: Player[] = [
-    {
-      id: "player-1",
-      name: "Lilac",
-      color: "#C5B0F4",
-      score: 0,
-      consecutiveSkips: 0,
-      status: "active",
-    },
-    {
-      id: "player-2",
-      name: "Lime",
-      color: "#DCEEB1",
-      score: 0,
-      consecutiveSkips: 0,
-      status: "active",
-    },
-  ];
+const LOCAL_PLAYER_SEEDS = [
+  { name: "Lilac", color: "#C5B0F4" },
+  { name: "Lime", color: "#DCEEB1" },
+  { name: "Cream", color: "#F4ECD6" },
+  { name: "Blush", color: "#EFD4D4" },
+] as const;
+
+export function createInitialGame(now = Date.now(), playerCount = 2): GameState {
+  const count = Math.min(Math.max(playerCount, 2), LOCAL_PLAYER_SEEDS.length);
+  const players: Player[] = LOCAL_PLAYER_SEEDS.slice(0, count).map((seed, index) => ({
+    id: `player-${index + 1}`,
+    name: seed.name,
+    color: seed.color,
+    score: 0,
+    consecutiveSkips: 0,
+    status: "active",
+  }));
 
   const lines: Record<string, Line> = {};
   for (let row = 0; row < DOT_ROWS; row += 1) {
