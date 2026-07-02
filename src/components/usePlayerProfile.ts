@@ -5,12 +5,14 @@ import { useAuth } from "@/components/AuthProvider";
 import {
   claimDailyLogin,
   getMatchHistory,
+  grantRewardedSparks,
   selectTheme as selectThemeCallable,
   subscribeToPlayerProfile,
   unlockTheme as unlockThemeCallable,
   type MatchHistoryEntry,
   type PlayerProfile,
 } from "@/lib/firebase/profile";
+import { showRewarded } from "@/lib/ads/adGate";
 
 export function usePlayerProfile() {
   const { player, isConfigured } = useAuth();
@@ -92,6 +94,26 @@ export function usePlayerProfile() {
     return result;
   }, [activeUserId]);
 
+  const watchRewardedAd = useCallback(async () => {
+    if (!activeUserId) return null;
+    const ad = await showRewarded();
+    if (!ad.granted) return null;
+    const result = await grantRewardedSparks();
+    if (!result) return null;
+    setProfileState((current) =>
+      current && current.userId === activeUserId && current.profile
+        ? {
+            userId: activeUserId,
+            profile: {
+              ...current.profile,
+              sparks: current.profile.sparks + result.reward,
+            },
+          }
+        : current,
+    );
+    return result;
+  }, [activeUserId]);
+
   const unlockTheme = useCallback(
     async (themeId: string) => {
       if (!activeUserId) return null;
@@ -145,6 +167,7 @@ export function usePlayerProfile() {
         : null,
     isSignedIn: player.provider === "google",
     claimDaily,
+    watchRewardedAd,
     unlockTheme,
     selectTheme,
   };

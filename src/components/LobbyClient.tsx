@@ -27,11 +27,14 @@ const DAILY_CLAIM_GAP_MILLIS = 20 * 60 * 60 * 1000;
 
 export function LobbyClient() {
   const { player } = useAuth();
-  const { profile, isSignedIn, claimDaily } = usePlayerProfile();
+  const { profile, isSignedIn, claimDaily, watchRewardedAd } = usePlayerProfile();
   const theme = getTheme(profile?.activeThemeId ?? "classic");
   const [claiming, setClaiming] = useState(false);
   const [claimedReward, setClaimedReward] = useState<number | null>(null);
   const [claimError, setClaimError] = useState<string | null>(null);
+  const [watchingAd, setWatchingAd] = useState(false);
+  const [adReward, setAdReward] = useState<{ reward: number; remaining: number } | null>(null);
+  const [adError, setAdError] = useState<string | null>(null);
   const [now] = useState(() => Date.now());
   const claimedToday = profile
     ? now - profile.lastLoginClaimAtMillis < DAILY_CLAIM_GAP_MILLIS
@@ -58,6 +61,20 @@ export function LobbyClient() {
       }
     } finally {
       setClaiming(false);
+    }
+  }
+
+  async function handleWatchAd() {
+    setWatchingAd(true);
+    setAdError(null);
+    try {
+      const result = await watchRewardedAd();
+      if (result) setAdReward({ reward: result.reward, remaining: result.remainingToday });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not grant reward.";
+      setAdError(message);
+    } finally {
+      setWatchingAd(false);
     }
   }
 
@@ -135,6 +152,22 @@ export function LobbyClient() {
             <p className="text-sm font-medium text-black">+{claimedReward} Sparks!</p>
           )}
           {claimError && <p className="text-sm text-black/70">{claimError}</p>}
+          {isSignedIn && (
+            <button
+              type="button"
+              onClick={handleWatchAd}
+              disabled={watchingAd}
+              className="min-h-11 w-full rounded-full bg-black px-4 text-sm font-medium text-white transition disabled:opacity-40"
+            >
+              {watchingAd ? "Loading ad..." : "Watch ad · +8 Sparks"}
+            </button>
+          )}
+          {adReward && (
+            <p className="text-sm font-medium text-black">
+              +{adReward.reward} Sparks! {adReward.remaining} left today.
+            </p>
+          )}
+          {adError && <p className="text-sm text-black/70">{adError}</p>}
         </Panel>
 
         <ActionLink href="/matchmaking?mode=quick">Find Match</ActionLink>

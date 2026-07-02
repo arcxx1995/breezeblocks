@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "emulators": "PATH=/opt/homebrew/bin:/usr/local/bin:$PATH firebase emulators:start --only auth,firestore,functions",
+    "emulators": "JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:/opt/homebrew/bin:/usr/local/bin:$PATH firebase emulators:start --only auth,firestore,functions",
     "android:add": "cap add android",
     "android:sync": "npm run build && cap sync android",
     "android:open": "cap open android",

@@ -40,6 +40,7 @@ export function MatchmakingClient({
   const rematchFallbackRef = useRef(false);
   const hasMatchedRef = useRef(false);
   const cancellingRef = useRef(false);
+  const elapsedRef = useRef(0);
   const matchMode = normalizeMode(mode);
   const matchmaking = useMatchmaking(matchMode);
   const {
@@ -67,6 +68,26 @@ export function MatchmakingClient({
     );
     return () => window.clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    elapsedRef.current = elapsed;
+  }, [elapsed]);
+
+  // Matching only runs when joinQueue is called, so two players already sitting
+  // in the queue never get paired (and the rating band never re-widens) until
+  // someone new joins. Re-run joinQueue on a timer while queued to close that
+  // gap. Read-only guards live in refs so this effect doesn't re-subscribe each
+  // second. Rematch has its own fallback path, so leave it alone here.
+  useEffect(() => {
+    if (rematchWith || queueStatus !== "queued" || queue?.source !== "functions") return;
+    const interval = window.setInterval(() => {
+      // Stop once the bot offer is available at 20s — past there it's the user's
+      // call, not more auto-polling.
+      if (cancellingRef.current || hasMatchedRef.current || elapsedRef.current >= 20) return;
+      startQueue();
+    }, 6000);
+    return () => window.clearInterval(interval);
+  }, [queue?.source, queueStatus, rematchWith, startQueue]);
 
   useEffect(() => {
     // Wait for the real, restored auth state before ever queueing — firing

@@ -1,9 +1,10 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.selectTheme = exports.unlockTheme = exports.claimDailyLogin = exports.ensureSignedProfile = exports.claimBotMove = exports.claimTimeoutSkip = exports.submitMove = exports.cancelQueue = exports.joinQueue = void 0;
+exports.selectTheme = exports.unlockTheme = exports.grantRewardedSparks = exports.claimDailyLogin = exports.ensureSignedProfile = exports.claimBotMove = exports.claimTimeoutSkip = exports.submitMove = exports.sweepMatchmakingQueues = exports.cancelQueue = exports.joinQueue = void 0;
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
 const https_1 = require("firebase-functions/https");
+const scheduler_1 = require("firebase-functions/scheduler");
 const gameRules_1 = require("./gameRules");
 (0, app_1.initializeApp)();
 const db = (0, firestore_1.getFirestore)();
@@ -11,17 +12,34 @@ const playerColors = ["#C5B0F4", "#DCEEB1", "#F4ECD6", "#EFD4D4"];
 const staleQueueAgeMillis = 2 * 60 * 1000;
 const matchedQueueReconnectMillis = 2 * 60 * 1000;
 const matchmakingQueryLimit = 12;
+// Cap matches formed per queue per sweep so a large backlog can't blow the
+// function timeout — the next sweep drains the rest.
+const sweepMaxMatchesPerQueue = 6;
 const profileLastSeenUpdateIntervalMillis = 60 * 60 * 1000;
 const queueTtlMillis = 24 * 60 * 60 * 1000;
 const anonymousGameTtlMillis = 7 * 24 * 60 * 60 * 1000;
 const signedGameTtlMillis = 90 * 24 * 60 * 60 * 1000;
 const botMoveDelayMillis = 700;
 const dailyLoginRewards = [10, 15, 20, 25, 30, 40, 50];
-const minClaimGapMillis = 20 * 60 * 60 * 1000;
-const streakResetGapMillis = 48 * 60 * 60 * 1000;
-const completionBaseSparks = 5;
-const winBonusSparks = 10;
-const sparksPerBoxWon = 1;
+const millisPerDay = 24 * 60 * 60 * 1000;
+// Match Sparks: flat and capped per day. Bot/unrated games pay near-zero so
+// grinding weak bots (allowBots matchmaking) can't mint currency. Loser payout
+// no longer scales with boxes captured, killing score-farming on a loss.
+const matchWinSparks = 10;
+const matchDrawOrLossSparks = 4;
+const botOrUnratedMatchSparks = 1;
+const maxRewardedMatchesPerDay = 6;
+// Rewarded ad faucet: the only ad-backed Spark source. Capped per day and gated
+// by a minimum gap so a client can't spam the callable to mint Sparks.
+// ponytail: true server-side ad verification (SSV) is impossible until an ad
+// network is wired; the day cap + gap is the abuse ceiling until then. Add the
+// network's signed callback check here when available.
+const rewardedAdSparks = 8;
+const maxRewardedAdsPerDay = 5;
+const minRewardedAdGapMillis = 3 * 1000;
+function utcDayNumber(millis) {
+    return Math.floor(millis / millisPerDay);
+}
 const defaultThemeId = "classic";
 const themeCatalog = {
     classic: { priceSparks: 0 },
@@ -164,6 +182,52 @@ exports.cancelQueue = (0, https_1.onCall)(callableOptions, async (request) => {
     });
     return { status: "cancelled" };
 });
+// Server-side backstop for matchmaking. The client re-poll (fast-path) only
+// runs while a player's app is open and awake, so a pair that both background
+// their tab — or any backlog the fast-path can't drain — would sit unmatched.
+// This sweep runs on a fixed clock, independent of any client, and pairs
+// whoever is already waiting. It only does work when a full group is present,
+// so it "switches on" exactly when there are enough players to match and
+// no-ops otherwise. Safe to run alongside joinQueue: it shares the same match
+// core, so the status guard + Firestore transaction retry prevent double
+// matches (whichever commits first wins; the other sees "matched" and skips).
+exports.sweepMatchmakingQueues = (0, scheduler_1.onSchedule)({
+    schedule: "every 1 minutes",
+    region: "us-central1",
+    memory: "256MiB",
+    timeoutSeconds: 60,
+    maxInstances: 1,
+}, async () => {
+    for (const queueName of allQueueNames) {
+        const { playerCount } = parseQueueName(queueName);
+        for (let formed = 0; formed < sweepMaxMatchesPerQueue; formed += 1) {
+            // One match per transaction so a concurrent joinQueue can't double-match.
+            const matched = await db.runTransaction(async (transaction) => {
+                const waitingSnapshot = await transaction.get(db
+                    .collection("matchmakingQueue")
+                    .where("queueName", "==", queueName)
+                    .where("status", "==", "queued")
+                    .orderBy("joinedAt", "asc")
+                    .limit(matchmakingQueryLimit));
+                if (waitingSnapshot.size < playerCount)
+                    return false;
+                const result = attemptCreateMatchInTransaction({
+                    transaction,
+                    waitingDocs: waitingSnapshot.docs,
+                    queueName,
+                    requestedPlayerCount: playerCount,
+                    now: firestore_1.Timestamp.now(),
+                    // No requester and no bot fill: the sweep only pairs real players
+                    // who are genuinely waiting; bot fill stays a deliberate client choice.
+                    allowBots: false,
+                });
+                return result.status === "matched";
+            });
+            if (!matched)
+                break;
+        }
+    }
+});
 exports.submitMove = (0, https_1.onCall)(callableOptions, async (request) => {
     const input = request.data;
     const uid = requireUid(request.auth?.uid);
@@ -270,7 +334,9 @@ exports.claimTimeoutSkip = (0, https_1.onCall)(callableOptions, async (request) 
                 expireAt: firestore_1.Timestamp.fromMillis(now.toMillis() +
                     (game.playerType === "anonymous" ? anonymousGameTtlMillis : signedGameTtlMillis)),
             });
-            writeSignedPlayerCompletionStats(transaction, gameRef.id, playersAfterSkip, signedPlayers, signedUserSnapshots, winnerPlayerIds, now);
+            writeSignedPlayerCompletionStats(transaction, gameRef.id, playersAfterSkip, signedPlayers, signedUserSnapshots, winnerPlayerIds, now, 
+            // Reached here only because every remaining player timed out — abandonment.
+            true);
             return {
                 status: "completed",
                 skippedPlayerId: skippedPlayer.playerId,
@@ -343,6 +409,15 @@ exports.claimBotMove = (0, https_1.onCall)(callableOptions, async (request) => {
     });
     return result;
 });
+// Bots are calibrated rating anchors: their tier reflects a known strength, so
+// unlike an anonymous human (whose true skill is unknown but always reads 1000)
+// a bot is a legitimate opponent to rate against. They never gain/lose rating
+// themselves — a fixed reference point, like a chess engine's rating.
+const botAnchorRating = {
+    easy: 800,
+    medium: 1000,
+    hard: 1200,
+};
 function createBotPlayer(index, botDifficulty) {
     return {
         playerId: `bot_${index + 1}`,
@@ -352,7 +427,7 @@ function createBotPlayer(index, botDifficulty) {
         avatarUrl: null,
         color: playerColors[index],
         score: 0,
-        rating: gameRules_1.DEFAULT_RATING,
+        rating: botAnchorRating[botDifficulty],
         isAnonymous: true,
         isBot: true,
         botDifficulty,
@@ -455,12 +530,16 @@ exports.claimDailyLogin = (0, https_1.onCall)(callableOptions, async (request) =
         const profile = snapshot.data();
         const now = firestore_1.Timestamp.now();
         const lastClaimMillis = toMillis(profile.lastLoginClaimAt);
-        const elapsedMillis = now.toMillis() - lastClaimMillis;
-        if (lastClaimMillis > 0 && elapsedMillis < minClaimGapMillis) {
+        const today = utcDayNumber(now.toMillis());
+        const lastClaimDay = lastClaimMillis > 0 ? utcDayNumber(lastClaimMillis) : null;
+        // One claim per UTC calendar day. Closes the banking abuse where a 20h gap
+        // let a user collect ~1.2 daily rewards per real day.
+        if (lastClaimDay !== null && today <= lastClaimDay) {
             throw new https_1.HttpsError("failed-precondition", "Daily reward already claimed.");
         }
         const previousStreak = Number(profile.loginStreak ?? 0);
-        const nextStreak = lastClaimMillis > 0 && elapsedMillis <= streakResetGapMillis ? previousStreak + 1 : 1;
+        // Consecutive day keeps the streak; any longer gap resets to day 1.
+        const nextStreak = lastClaimDay !== null && today - lastClaimDay === 1 ? previousStreak + 1 : 1;
         const reward = dailyLoginRewards[(nextStreak - 1) % dailyLoginRewards.length];
         transaction.update(userRef, {
             sparks: firestore_1.FieldValue.increment(reward),
@@ -471,6 +550,49 @@ exports.claimDailyLogin = (0, https_1.onCall)(callableOptions, async (request) =
         return {
             reward,
             loginStreak: nextStreak,
+            claimedAt: now.toMillis(),
+        };
+    });
+    return result;
+});
+exports.grantRewardedSparks = (0, https_1.onCall)(callableOptions, async (request) => {
+    const uid = requireUid(request.auth?.uid);
+    const isAnonymous = isAnonymousAuth(request.auth?.token.firebase?.sign_in_provider);
+    if (isAnonymous) {
+        throw new https_1.HttpsError("failed-precondition", "Anonymous players do not get permanent profiles.");
+    }
+    const userRef = db.collection("users").doc(uid);
+    const result = await db.runTransaction(async (transaction) => {
+        const snapshot = await transaction.get(userRef);
+        if (!snapshot.exists) {
+            throw new https_1.HttpsError("failed-precondition", "Profile not found. Sign in again.");
+        }
+        const profile = snapshot.data();
+        const now = firestore_1.Timestamp.now();
+        const today = utcDayNumber(now.toMillis());
+        const priorDay = Number(profile.rewardedAdDayKey ?? -1);
+        const grantedToday = priorDay === today ? Number(profile.rewardedAdTodayCount ?? 0) : 0;
+        if (grantedToday >= maxRewardedAdsPerDay) {
+            throw new https_1.HttpsError("resource-exhausted", "Daily rewarded-ad limit reached.");
+        }
+        // Anti-spam gate. The real defence against faking a watch is server-side ad
+        // verification, which needs the ad network — see rewardedAdSparks comment.
+        const lastGrantMillis = toMillis(profile.lastRewardedAdAt);
+        if (lastGrantMillis > 0 && now.toMillis() - lastGrantMillis < minRewardedAdGapMillis) {
+            throw new https_1.HttpsError("failed-precondition", "Please wait before watching another ad.");
+        }
+        const nextCount = grantedToday + 1;
+        transaction.update(userRef, {
+            sparks: firestore_1.FieldValue.increment(rewardedAdSparks),
+            rewardedAdDayKey: today,
+            rewardedAdTodayCount: nextCount,
+            lastRewardedAdAt: now,
+            updatedAt: now,
+        });
+        return {
+            reward: rewardedAdSparks,
+            grantedToday: nextCount,
+            remainingToday: maxRewardedAdsPerDay - nextCount,
             claimedAt: now.toMillis(),
         };
     });
@@ -584,6 +706,12 @@ function toQueueName(authType, playerCount) {
     const prefix = authType === "signed" ? "signed" : "anon";
     return `${prefix}_${playerCount}p`;
 }
+function parseQueueName(queueName) {
+    const [prefix, countPart] = queueName.split("_");
+    const authType = prefix === "signed" ? "signed" : "anonymous";
+    const playerCount = Number(countPart.replace("p", ""));
+    return { authType, playerCount };
+}
 function queueDocToPlayer(queueEntryId, queue, index) {
     return {
         playerId: queue.userId ?? queue.guestId,
@@ -619,10 +747,13 @@ function selectRatingMatchedEntries(waitingEntries, requesterQueueRef, requester
         : undefined;
     if (!requesterEntry)
         return waitingEntries.slice(0, requestedPlayerCount);
+    const requesterWaitMillis = now.toMillis() - toMillis(requesterEntry.data.joinedAt);
     const eligibleOpponents = waitingEntries
         .filter((entry) => entry !== requesterEntry)
         .filter((entry) => {
-        const waitMillis = now.toMillis() - toMillis(entry.data.joinedAt);
+        // Symmetric band: widen by whichever side has waited longer, so a lone
+        // long-waiting requester also gets matched, not just long-waiting opponents.
+        const waitMillis = Math.max(requesterWaitMillis, now.toMillis() - toMillis(entry.data.joinedAt));
         return Math.abs(entryRating(entry.data) - requesterRating) <= ratingBandForWaitMillis(waitMillis);
     })
         .sort((a, b) => {
@@ -709,6 +840,16 @@ function attemptCreateMatchInTransaction({ transaction, waitingDocs, queueName, 
             data: requesterQueueData,
         });
     }
+    else if (requesterQueueRef && requesterQueueData && requesterAlreadyWaiting) {
+        // Re-join of an already-queued doc (e.g. the rematch fallback clearing its
+        // restrictedToUid). Refresh the stored doc and the in-memory entry so the
+        // updated fields are visible to this match AND to future joiners — otherwise
+        // a stale restrictedToUid keeps other players from ever pairing with it.
+        const existing = waitingEntries.find((entry) => entry.ref.path === requesterQueueRef.path);
+        if (existing)
+            existing.data = requesterQueueData;
+        transaction.set(requesterQueueRef, requesterQueueData, { merge: true });
+    }
     waitingEntries.sort((a, b) => toMillis(a.data.joinedAt) - toMillis(b.data.joinedAt));
     if (waitingEntries.length < requestedPlayerCount && !allowBots) {
         if (requesterQueueRef && requesterQueueData && !requesterAlreadyWaiting) {
@@ -739,7 +880,10 @@ function attemptCreateMatchInTransaction({ transaction, waitingDocs, queueName, 
             status: "queued",
         };
     }
-    const selectedPlayers = selectedQueueEntries.map((entry, index) => queueDocToPlayer(entry.id, entry.data, index));
+    // Seat by join time so the earliest joiner moves first, instead of the
+    // match-triggering (latest) player always getting the first-move advantage.
+    const orderedQueueEntries = [...selectedQueueEntries].sort((a, b) => toMillis(a.data.joinedAt) - toMillis(b.data.joinedAt));
+    const selectedPlayers = orderedQueueEntries.map((entry, index) => queueDocToPlayer(entry.id, entry.data, index));
     while (allowBots && selectedPlayers.length < requestedPlayerCount) {
         selectedPlayers.push(createBotPlayer(selectedPlayers.length, botDifficulty));
     }
@@ -836,7 +980,9 @@ async function applyMoveInTransaction({ transaction, gameRef, game, players, cur
     }
     transaction.update(gameRef, gameUpdates);
     if (gameComplete) {
-        writeSignedPlayerCompletionStats(transaction, gameRef.id, finalPlayers, signedPlayers, signedUserSnapshots, winnerPlayerIds, movedAt);
+        writeSignedPlayerCompletionStats(transaction, gameRef.id, finalPlayers, signedPlayers, signedUserSnapshots, winnerPlayerIds, movedAt, 
+        // Board not full = ended by everyone else going inactive, not a real finish.
+        capturedBoxCount < gameRules_1.BOX_ROWS * gameRules_1.BOX_COLS);
     }
     return { completedBoxIds, status: gameComplete ? "completed" : "active" };
 }
@@ -878,28 +1024,79 @@ function isAlreadyExistsError(error) {
     const candidate = error;
     return candidate.code === 6 || candidate.code === "already-exists";
 }
-function writeSignedPlayerCompletionStats(transaction, gameId, finalPlayers, signedPlayers, signedUserSnapshots, winnerPlayerIds, completedAt) {
-    if (finalPlayers.some((player) => player.isBot))
-        return;
-    const isDraw = winnerPlayerIds.length !== 1;
+function writeSignedPlayerCompletionStats(transaction, gameId, finalPlayers, signedPlayers, signedUserSnapshots, winnerPlayerIds, completedAt, abandoned) {
     const highScore = Math.max(...finalPlayers.map((player) => Number(player.score ?? 0)));
+    // Rating applies to a real finish where every human is a rated (signed)
+    // player; bots are allowed as fixed anchors. Anonymous humans are excluded
+    // because their true skill is unknown yet always reads 1000 — rating against
+    // them would mint/burn points against a phantom the other side never absorbs.
+    const rated = !abandoned &&
+        finalPlayers.filter((player) => !player.isBot).every(isSignedServerPlayer);
+    // Freeze one pre-game rating per player: signed humans from their live profile
+    // snapshot, bots (and any excluded anon) from the game doc. Using one source
+    // for both sides of every pair keeps equal-K deltas exactly zero-sum.
+    const preGameRating = new Map();
+    finalPlayers.forEach((player) => {
+        const signedIndex = signedPlayers.findIndex((s) => s.playerId === player.playerId);
+        if (signedIndex >= 0) {
+            const snapshot = signedUserSnapshots[signedIndex];
+            preGameRating.set(player.playerId, Number(snapshot.exists ? snapshot.data()?.rating ?? gameRules_1.DEFAULT_RATING : gameRules_1.DEFAULT_RATING));
+        }
+        else {
+            preGameRating.set(player.playerId, Number(player.rating ?? gameRules_1.DEFAULT_RATING));
+        }
+    });
     signedPlayers.forEach((player, index) => {
         const userRef = db.collection("users").doc(player.userId);
         const userSnapshot = signedUserSnapshots[index];
         const score = Number(player.score ?? 0);
-        const won = !isDraw && winnerPlayerIds.includes(player.playerId);
-        const lost = !isDraw && !won;
+        // Outcome from final standing, so a player who finished behind a two-way tie
+        // for first records a loss — not a draw. Co-leaders record a draw; the sole
+        // top score records a win.
+        const isWinner = winnerPlayerIds.includes(player.playerId);
+        const won = isWinner && winnerPlayerIds.length === 1;
+        const draw = isWinner && winnerPlayerIds.length > 1;
+        const lost = !isWinner;
         const currentHighest = Number(userSnapshot.exists ? userSnapshot.data()?.highestBoxesSingleGame ?? 0 : 0);
-        const currentRating = Number(userSnapshot.exists ? userSnapshot.data()?.rating ?? gameRules_1.DEFAULT_RATING : gameRules_1.DEFAULT_RATING);
-        const opponents = finalPlayers
-            .filter((other) => other.playerId !== player.playerId)
-            .map((other) => {
-            const otherScore = Number(other.score ?? 0);
-            const result = score > otherScore ? 1 : score < otherScore ? 0 : 0.5;
-            return { rating: Number(other.rating ?? gameRules_1.DEFAULT_RATING), result };
-        });
-        const ratingDelta = (0, gameRules_1.computeRatingDelta)(currentRating, opponents);
-        const sparksEarned = completionBaseSparks + (won ? winBonusSparks : 0) + score * sparksPerBoxWon;
+        const gamesPlayed = Number(userSnapshot.exists ? userSnapshot.data()?.totalGamesPlayed ?? 0 : 0);
+        let ratingUpdate = {};
+        if (rated) {
+            const playerRating = preGameRating.get(player.playerId) ?? gameRules_1.DEFAULT_RATING;
+            const opponents = finalPlayers
+                .filter((other) => other.playerId !== player.playerId)
+                .map((other) => {
+                const otherScore = Number(other.score ?? 0);
+                const result = score > otherScore ? 1 : score < otherScore ? 0 : 0.5;
+                return {
+                    rating: preGameRating.get(other.playerId) ?? gameRules_1.DEFAULT_RATING,
+                    result,
+                    margin: Math.abs(score - otherScore),
+                };
+            });
+            const ratingDelta = (0, gameRules_1.computeRatingDelta)(playerRating, opponents, gamesPlayed);
+            ratingUpdate = { rating: playerRating + ratingDelta };
+        }
+        // Bot or unrated (anonymous-opponent) finishes pay a token amount only —
+        // never enough to farm. Rated human finishes pay a flat, per-day-capped
+        // reward. Loser payout no longer scales with boxes captured.
+        const hasBotOpponent = finalPlayers.some((other) => other.isBot);
+        const matchDay = utcDayNumber(completedAt.toMillis());
+        const priorRewardDay = Number(userSnapshot.exists ? userSnapshot.data()?.matchRewardDayKey ?? -1 : -1);
+        const rewardedToday = priorRewardDay === matchDay
+            ? Number(userSnapshot.data()?.matchRewardTodayCount ?? 0)
+            : 0;
+        let sparksEarned;
+        let nextRewardedToday = rewardedToday;
+        if (!rated || hasBotOpponent) {
+            sparksEarned = botOrUnratedMatchSparks;
+        }
+        else if (rewardedToday < maxRewardedMatchesPerDay) {
+            sparksEarned = won ? matchWinSparks : matchDrawOrLossSparks;
+            nextRewardedToday = rewardedToday + 1;
+        }
+        else {
+            sparksEarned = 0;
+        }
         transaction.set(userRef, {
             userId: player.userId,
             displayName: player.displayName ?? "Breezeblocks Player",
@@ -907,11 +1104,13 @@ function writeSignedPlayerCompletionStats(transaction, gameId, finalPlayers, sig
             totalGamesPlayed: firestore_1.FieldValue.increment(1),
             totalWins: firestore_1.FieldValue.increment(won ? 1 : 0),
             totalLosses: firestore_1.FieldValue.increment(lost ? 1 : 0),
-            totalDraws: firestore_1.FieldValue.increment(isDraw ? 1 : 0),
+            totalDraws: firestore_1.FieldValue.increment(draw ? 1 : 0),
             totalBoxesWon: firestore_1.FieldValue.increment(score),
             highestBoxesSingleGame: Math.max(currentHighest, score),
-            rating: currentRating + ratingDelta,
+            ...ratingUpdate,
             sparks: firestore_1.FieldValue.increment(sparksEarned),
+            matchRewardDayKey: matchDay,
+            matchRewardTodayCount: nextRewardedToday,
             updatedAt: completedAt,
         }, { merge: true });
         transaction.set(db.collection("matchHistory").doc(`${gameId}_${player.userId}`), {
@@ -920,7 +1119,7 @@ function writeSignedPlayerCompletionStats(transaction, gameId, finalPlayers, sig
             userId: player.userId,
             playerId: player.playerId,
             displayName: player.displayName ?? "Breezeblocks Player",
-            result: isDraw ? "draw" : won ? "win" : "loss",
+            result: won ? "win" : draw ? "draw" : "loss",
             score,
             highScore,
             playerCount: finalPlayers.length,

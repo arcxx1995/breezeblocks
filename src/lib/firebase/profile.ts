@@ -41,6 +41,13 @@ export type DailyLoginClaimResult = {
   claimedAt: number;
 };
 
+export type RewardedSparksResult = {
+  reward: number;
+  grantedToday: number;
+  remainingToday: number;
+  claimedAt: number;
+};
+
 export type UnlockThemeResult = {
   themeId: string;
   spentSparks: number;
@@ -88,6 +95,18 @@ export async function claimDailyLogin() {
   const callable = httpsCallable<Record<string, never>, DailyLoginClaimResult>(
     functions,
     "claimDailyLogin",
+  );
+  const response = await callable({});
+  return response.data;
+}
+
+export async function grantRewardedSparks() {
+  const functions = getFirebaseFunctions();
+  if (!functions) return null;
+
+  const callable = httpsCallable<Record<string, never>, RewardedSparksResult>(
+    functions,
+    "grantRewardedSparks",
   );
   const response = await callable({});
   return response.data;

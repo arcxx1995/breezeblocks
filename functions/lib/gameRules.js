@@ -282,15 +282,35 @@ function pickSmallestSacrifice(openLines, lineOwners, boxOwners) {
 // of pairwise results (win/loss/draw by final score) and averaging the
 // per-pair delta so K stays meaningful regardless of player count.
 exports.DEFAULT_RATING = 1000;
-const ELO_K = 32;
-function computeRatingDelta(playerRating, opponents) {
+// Provisional K: new accounts move fast so a fresh 1000 converges toward its
+// true skill in a handful of games instead of staying an uninformative 1000.
+// This makes per-player K asymmetric (a rookie's delta can exceed a veteran's),
+// so the system is only zero-sum once everyone is out of placements — the
+// standard, accepted trade-off (USCF/Glicko do the same).
+function eloK(gamesPlayed) {
+    if (gamesPlayed < 10)
+        return 48;
+    if (gamesPlayed < 30)
+        return 32;
+    return 24;
+}
+// Margin-of-victory multiplier. Symmetric per pair (winner and loser share the
+// same |margin|, so it scales both sides equally and stays zero-sum), diminishing
+// so a blowout counts more than a squeaker without dwarfing the base result.
+function movMultiplier(margin) {
+    return Math.min(2, 1 + Math.log1p(Math.max(0, margin)) * 0.18);
+}
+// Returns a float delta. Ratings are stored as floats so nothing is lost to
+// per-player rounding — the system stays exactly zero-sum between equal-K
+// players (provisional K is the only intentional asymmetry). Round at display.
+function computeRatingDelta(playerRating, opponents, gamesPlayed = 0) {
     if (opponents.length === 0)
         return 0;
     const totalDelta = opponents.reduce((sum, opponent) => {
         const expected = 1 / (1 + 10 ** ((opponent.rating - playerRating) / 400));
-        return sum + (opponent.result - expected);
+        return sum + (opponent.result - expected) * movMultiplier(opponent.margin ?? 0);
     }, 0);
-    return Math.round((ELO_K * totalDelta) / opponents.length);
+    return (eloK(gamesPlayed) * totalDelta) / opponents.length;
 }
 function chooseBotLine(lineOwners, boxOwners, difficulty = "medium") {
     const openLines = getOpenLines(lineOwners);

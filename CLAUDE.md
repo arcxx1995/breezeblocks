@@ -336,6 +336,10 @@ Callable functions:
 - `claimBotMove`
 - `ensureSignedProfile`
 
+Scheduled functions:
+
+- `sweepMatchmakingQueues`: runs every 1 minute (`onSchedule`, `maxInstances: 1`). Server-side matchmaking backstop. Scans each queue name; while a full group (`>= playerCount`) is waiting it forms matches via the same `attemptCreateMatchInTransaction` core as `joinQueue` (no requester, `allowBots: false`), one match per transaction, capped at `sweepMaxMatchesPerQueue` (6) per queue per run. Complements the client re-poll in `MatchmakingClient`: the client fast-path pairs players in the first ~20s while their app is open; the sweep catches backlogs and players whose clients backgrounded. Double-matching is prevented by the shared match core + `status` guard + Firestore transaction retry. Reuses the existing `matchmakingQueue` composite index (`status`, `queueName`, `joinedAt`); needs Cloud Scheduler enabled on deploy.
+
 Callable options:
 
 - Region: `us-central1`

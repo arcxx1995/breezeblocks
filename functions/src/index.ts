@@ -10,6 +10,7 @@ import {
   type Transaction,
 } from "firebase-admin/firestore";
 import { HttpsError, onCall } from "firebase-functions/https";
+import { onSchedule } from "firebase-functions/scheduler";
 import {
   BOX_ROWS,
   BOX_COLS,
@@ -94,17 +95,35 @@ const playerColors = ["#C5B0F4", "#DCEEB1", "#F4ECD6", "#EFD4D4"];
 const staleQueueAgeMillis = 2 * 60 * 1000;
 const matchedQueueReconnectMillis = 2 * 60 * 1000;
 const matchmakingQueryLimit = 12;
+// Cap matches formed per queue per sweep so a large backlog can't blow the
+// function timeout — the next sweep drains the rest.
+const sweepMaxMatchesPerQueue = 6;
 const profileLastSeenUpdateIntervalMillis = 60 * 60 * 1000;
 const queueTtlMillis = 24 * 60 * 60 * 1000;
 const anonymousGameTtlMillis = 7 * 24 * 60 * 60 * 1000;
 const signedGameTtlMillis = 90 * 24 * 60 * 60 * 1000;
 const botMoveDelayMillis = 700;
 const dailyLoginRewards = [10, 15, 20, 25, 30, 40, 50];
-const minClaimGapMillis = 20 * 60 * 60 * 1000;
-const streakResetGapMillis = 48 * 60 * 60 * 1000;
-const completionBaseSparks = 5;
-const winBonusSparks = 10;
-const sparksPerBoxWon = 1;
+const millisPerDay = 24 * 60 * 60 * 1000;
+// Match Sparks: flat and capped per day. Bot/unrated games pay near-zero so
+// grinding weak bots (allowBots matchmaking) can't mint currency. Loser payout
+// no longer scales with boxes captured, killing score-farming on a loss.
+const matchWinSparks = 10;
+const matchDrawOrLossSparks = 4;
+const botOrUnratedMatchSparks = 1;
+const maxRewardedMatchesPerDay = 6;
+// Rewarded ad faucet: the only ad-backed Spark source. Capped per day and gated
+// by a minimum gap so a client can't spam the callable to mint Sparks.
+// ponytail: true server-side ad verification (SSV) is impossible until an ad
+// network is wired; the day cap + gap is the abuse ceiling until then. Add the
+// network's signed callback check here when available.
+const rewardedAdSparks = 8;
+const maxRewardedAdsPerDay = 5;
+const minRewardedAdGapMillis = 3 * 1000;
+
+function utcDayNumber(millis: number): number {
+  return Math.floor(millis / millisPerDay);
+}
 const defaultThemeId = "classic";
 const themeCatalog: Record<string, { priceSparks: number }> = {
   classic: { priceSparks: 0 },
@@ -268,6 +287,56 @@ export const cancelQueue = onCall<CancelQueueInput>(callableOptions, async (requ
   return { status: "cancelled" as const };
 });
 
+// Server-side backstop for matchmaking. The client re-poll (fast-path) only
+// runs while a player's app is open and awake, so a pair that both background
+// their tab — or any backlog the fast-path can't drain — would sit unmatched.
+// This sweep runs on a fixed clock, independent of any client, and pairs
+// whoever is already waiting. It only does work when a full group is present,
+// so it "switches on" exactly when there are enough players to match and
+// no-ops otherwise. Safe to run alongside joinQueue: it shares the same match
+// core, so the status guard + Firestore transaction retry prevent double
+// matches (whichever commits first wins; the other sees "matched" and skips).
+export const sweepMatchmakingQueues = onSchedule(
+  {
+    schedule: "every 1 minutes",
+    region: "us-central1",
+    memory: "256MiB",
+    timeoutSeconds: 60,
+    maxInstances: 1,
+  },
+  async () => {
+    for (const queueName of allQueueNames) {
+      const { playerCount } = parseQueueName(queueName);
+      for (let formed = 0; formed < sweepMaxMatchesPerQueue; formed += 1) {
+        // One match per transaction so a concurrent joinQueue can't double-match.
+        const matched = await db.runTransaction(async (transaction) => {
+          const waitingSnapshot = await transaction.get(
+            db
+              .collection("matchmakingQueue")
+              .where("queueName", "==", queueName)
+              .where("status", "==", "queued")
+              .orderBy("joinedAt", "asc")
+              .limit(matchmakingQueryLimit),
+          );
+          if (waitingSnapshot.size < playerCount) return false;
+          const result = attemptCreateMatchInTransaction({
+            transaction,
+            waitingDocs: waitingSnapshot.docs,
+            queueName,
+            requestedPlayerCount: playerCount,
+            now: Timestamp.now(),
+            // No requester and no bot fill: the sweep only pairs real players
+            // who are genuinely waiting; bot fill stays a deliberate client choice.
+            allowBots: false,
+          });
+          return result.status === "matched";
+        });
+        if (!matched) break;
+      }
+    }
+  },
+);
+
 export const submitMove = onCall<SubmitMoveInput>(callableOptions, async (request) => {
   const input = request.data;
   const uid = requireUid(request.auth?.uid);
@@ -401,6 +470,8 @@ export const claimTimeoutSkip = onCall<ClaimTimeoutSkipInput>(callableOptions, a
         signedUserSnapshots,
         winnerPlayerIds,
         now,
+        // Reached here only because every remaining player timed out — abandonment.
+        true,
       );
       return {
         status: "completed" as const,
@@ -487,6 +558,16 @@ export const claimBotMove = onCall<ClaimBotMoveInput>(callableOptions, async (re
   return result;
 });
 
+// Bots are calibrated rating anchors: their tier reflects a known strength, so
+// unlike an anonymous human (whose true skill is unknown but always reads 1000)
+// a bot is a legitimate opponent to rate against. They never gain/lose rating
+// themselves — a fixed reference point, like a chess engine's rating.
+const botAnchorRating: Record<BotDifficulty, number> = {
+  easy: 800,
+  medium: 1000,
+  hard: 1200,
+};
+
 function createBotPlayer(index: number, botDifficulty: BotDifficulty) {
   return {
     playerId: `bot_${index + 1}`,
@@ -496,7 +577,7 @@ function createBotPlayer(index: number, botDifficulty: BotDifficulty) {
     avatarUrl: null,
     color: playerColors[index],
     score: 0,
-    rating: DEFAULT_RATING,
+    rating: botAnchorRating[botDifficulty],
     isAnonymous: true,
     isBot: true,
     botDifficulty,
@@ -611,15 +692,19 @@ export const claimDailyLogin = onCall<ClaimDailyLoginInput>(callableOptions, asy
     const profile = snapshot.data()!;
     const now = Timestamp.now();
     const lastClaimMillis = toMillis(profile.lastLoginClaimAt);
-    const elapsedMillis = now.toMillis() - lastClaimMillis;
+    const today = utcDayNumber(now.toMillis());
+    const lastClaimDay = lastClaimMillis > 0 ? utcDayNumber(lastClaimMillis) : null;
 
-    if (lastClaimMillis > 0 && elapsedMillis < minClaimGapMillis) {
+    // One claim per UTC calendar day. Closes the banking abuse where a 20h gap
+    // let a user collect ~1.2 daily rewards per real day.
+    if (lastClaimDay !== null && today <= lastClaimDay) {
       throw new HttpsError("failed-precondition", "Daily reward already claimed.");
     }
 
     const previousStreak = Number(profile.loginStreak ?? 0);
+    // Consecutive day keeps the streak; any longer gap resets to day 1.
     const nextStreak =
-      lastClaimMillis > 0 && elapsedMillis <= streakResetGapMillis ? previousStreak + 1 : 1;
+      lastClaimDay !== null && today - lastClaimDay === 1 ? previousStreak + 1 : 1;
     const reward = dailyLoginRewards[(nextStreak - 1) % dailyLoginRewards.length];
 
     transaction.update(userRef, {
@@ -632,6 +717,57 @@ export const claimDailyLogin = onCall<ClaimDailyLoginInput>(callableOptions, asy
     return {
       reward,
       loginStreak: nextStreak,
+      claimedAt: now.toMillis(),
+    };
+  });
+
+  return result;
+});
+
+export const grantRewardedSparks = onCall(callableOptions, async (request) => {
+  const uid = requireUid(request.auth?.uid);
+  const isAnonymous = isAnonymousAuth(request.auth?.token.firebase?.sign_in_provider);
+  if (isAnonymous) {
+    throw new HttpsError("failed-precondition", "Anonymous players do not get permanent profiles.");
+  }
+
+  const userRef = db.collection("users").doc(uid);
+  const result = await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(userRef);
+    if (!snapshot.exists) {
+      throw new HttpsError("failed-precondition", "Profile not found. Sign in again.");
+    }
+
+    const profile = snapshot.data()!;
+    const now = Timestamp.now();
+    const today = utcDayNumber(now.toMillis());
+    const priorDay = Number(profile.rewardedAdDayKey ?? -1);
+    const grantedToday = priorDay === today ? Number(profile.rewardedAdTodayCount ?? 0) : 0;
+
+    if (grantedToday >= maxRewardedAdsPerDay) {
+      throw new HttpsError("resource-exhausted", "Daily rewarded-ad limit reached.");
+    }
+
+    // Anti-spam gate. The real defence against faking a watch is server-side ad
+    // verification, which needs the ad network — see rewardedAdSparks comment.
+    const lastGrantMillis = toMillis(profile.lastRewardedAdAt);
+    if (lastGrantMillis > 0 && now.toMillis() - lastGrantMillis < minRewardedAdGapMillis) {
+      throw new HttpsError("failed-precondition", "Please wait before watching another ad.");
+    }
+
+    const nextCount = grantedToday + 1;
+    transaction.update(userRef, {
+      sparks: FieldValue.increment(rewardedAdSparks),
+      rewardedAdDayKey: today,
+      rewardedAdTodayCount: nextCount,
+      lastRewardedAdAt: now,
+      updatedAt: now,
+    });
+
+    return {
+      reward: rewardedAdSparks,
+      grantedToday: nextCount,
+      remainingToday: maxRewardedAdsPerDay - nextCount,
       claimedAt: now.toMillis(),
     };
   });
@@ -769,6 +905,16 @@ function toQueueName(authType: AuthType, playerCount: PlayerCount): QueueName {
   return `${prefix}_${playerCount}p` as QueueName;
 }
 
+function parseQueueName(queueName: QueueName): {
+  authType: AuthType;
+  playerCount: PlayerCount;
+} {
+  const [prefix, countPart] = queueName.split("_");
+  const authType: AuthType = prefix === "signed" ? "signed" : "anonymous";
+  const playerCount = Number(countPart.replace("p", "")) as PlayerCount;
+  return { authType, playerCount };
+}
+
 function queueDocToPlayer(
   queueEntryId: string,
   queue: DocumentData,
@@ -817,10 +963,16 @@ function selectRatingMatchedEntries(
     : undefined;
   if (!requesterEntry) return waitingEntries.slice(0, requestedPlayerCount);
 
+  const requesterWaitMillis = now.toMillis() - toMillis(requesterEntry.data.joinedAt);
   const eligibleOpponents = waitingEntries
     .filter((entry) => entry !== requesterEntry)
     .filter((entry) => {
-      const waitMillis = now.toMillis() - toMillis(entry.data.joinedAt);
+      // Symmetric band: widen by whichever side has waited longer, so a lone
+      // long-waiting requester also gets matched, not just long-waiting opponents.
+      const waitMillis = Math.max(
+        requesterWaitMillis,
+        now.toMillis() - toMillis(entry.data.joinedAt),
+      );
       return Math.abs(entryRating(entry.data) - requesterRating) <= ratingBandForWaitMillis(waitMillis);
     })
     .sort((a, b) => {
@@ -955,6 +1107,14 @@ function attemptCreateMatchInTransaction({
       id: requesterQueueRef.id,
       data: requesterQueueData,
     });
+  } else if (requesterQueueRef && requesterQueueData && requesterAlreadyWaiting) {
+    // Re-join of an already-queued doc (e.g. the rematch fallback clearing its
+    // restrictedToUid). Refresh the stored doc and the in-memory entry so the
+    // updated fields are visible to this match AND to future joiners — otherwise
+    // a stale restrictedToUid keeps other players from ever pairing with it.
+    const existing = waitingEntries.find((entry) => entry.ref.path === requesterQueueRef.path);
+    if (existing) existing.data = requesterQueueData;
+    transaction.set(requesterQueueRef, requesterQueueData, { merge: true });
   }
 
   waitingEntries.sort((a, b) => toMillis(a.data.joinedAt) - toMillis(b.data.joinedAt));
@@ -998,7 +1158,12 @@ function attemptCreateMatchInTransaction({
     };
   }
 
-  const selectedPlayers = selectedQueueEntries.map((entry, index) =>
+  // Seat by join time so the earliest joiner moves first, instead of the
+  // match-triggering (latest) player always getting the first-move advantage.
+  const orderedQueueEntries = [...selectedQueueEntries].sort(
+    (a, b) => toMillis(a.data.joinedAt) - toMillis(b.data.joinedAt),
+  );
+  const selectedPlayers = orderedQueueEntries.map((entry, index) =>
     queueDocToPlayer(entry.id, entry.data, index),
   );
   while (allowBots && selectedPlayers.length < requestedPlayerCount) {
@@ -1164,6 +1329,8 @@ async function applyMoveInTransaction({
       signedUserSnapshots,
       winnerPlayerIds,
       movedAt,
+      // Board not full = ended by everyone else going inactive, not a real finish.
+      capturedBoxCount < BOX_ROWS * BOX_COLS,
     );
   }
 
@@ -1227,34 +1394,93 @@ function writeSignedPlayerCompletionStats(
   signedUserSnapshots: DocumentSnapshot[],
   winnerPlayerIds: string[],
   completedAt: Timestamp,
+  abandoned: boolean,
 ) {
-  if (finalPlayers.some((player) => player.isBot)) return;
-
-  const isDraw = winnerPlayerIds.length !== 1;
   const highScore = Math.max(...finalPlayers.map((player) => Number(player.score ?? 0)));
+
+  // Rating applies to a real finish where every human is a rated (signed)
+  // player; bots are allowed as fixed anchors. Anonymous humans are excluded
+  // because their true skill is unknown yet always reads 1000 — rating against
+  // them would mint/burn points against a phantom the other side never absorbs.
+  const rated =
+    !abandoned &&
+    finalPlayers.filter((player) => !player.isBot).every(isSignedServerPlayer);
+
+  // Freeze one pre-game rating per player: signed humans from their live profile
+  // snapshot, bots (and any excluded anon) from the game doc. Using one source
+  // for both sides of every pair keeps equal-K deltas exactly zero-sum.
+  const preGameRating = new Map<string, number>();
+  finalPlayers.forEach((player) => {
+    const signedIndex = signedPlayers.findIndex((s) => s.playerId === player.playerId);
+    if (signedIndex >= 0) {
+      const snapshot = signedUserSnapshots[signedIndex];
+      preGameRating.set(
+        player.playerId,
+        Number(snapshot.exists ? snapshot.data()?.rating ?? DEFAULT_RATING : DEFAULT_RATING),
+      );
+    } else {
+      preGameRating.set(player.playerId, Number(player.rating ?? DEFAULT_RATING));
+    }
+  });
 
   signedPlayers.forEach((player, index) => {
     const userRef = db.collection("users").doc(player.userId);
     const userSnapshot = signedUserSnapshots[index];
     const score = Number(player.score ?? 0);
-    const won = !isDraw && winnerPlayerIds.includes(player.playerId);
-    const lost = !isDraw && !won;
+    // Outcome from final standing, so a player who finished behind a two-way tie
+    // for first records a loss — not a draw. Co-leaders record a draw; the sole
+    // top score records a win.
+    const isWinner = winnerPlayerIds.includes(player.playerId);
+    const won = isWinner && winnerPlayerIds.length === 1;
+    const draw = isWinner && winnerPlayerIds.length > 1;
+    const lost = !isWinner;
     const currentHighest = Number(
       userSnapshot.exists ? userSnapshot.data()?.highestBoxesSingleGame ?? 0 : 0,
     );
-    const currentRating = Number(
-      userSnapshot.exists ? userSnapshot.data()?.rating ?? DEFAULT_RATING : DEFAULT_RATING,
+    const gamesPlayed = Number(
+      userSnapshot.exists ? userSnapshot.data()?.totalGamesPlayed ?? 0 : 0,
     );
-    const opponents = finalPlayers
-      .filter((other) => other.playerId !== player.playerId)
-      .map((other) => {
-        const otherScore = Number(other.score ?? 0);
-        const result: 0 | 0.5 | 1 = score > otherScore ? 1 : score < otherScore ? 0 : 0.5;
-        return { rating: Number(other.rating ?? DEFAULT_RATING), result };
-      });
-    const ratingDelta = computeRatingDelta(currentRating, opponents);
-    const sparksEarned =
-      completionBaseSparks + (won ? winBonusSparks : 0) + score * sparksPerBoxWon;
+
+    let ratingUpdate: Record<string, unknown> = {};
+    if (rated) {
+      const playerRating = preGameRating.get(player.playerId) ?? DEFAULT_RATING;
+      const opponents = finalPlayers
+        .filter((other) => other.playerId !== player.playerId)
+        .map((other) => {
+          const otherScore = Number(other.score ?? 0);
+          const result: 0 | 0.5 | 1 = score > otherScore ? 1 : score < otherScore ? 0 : 0.5;
+          return {
+            rating: preGameRating.get(other.playerId) ?? DEFAULT_RATING,
+            result,
+            margin: Math.abs(score - otherScore),
+          };
+        });
+      const ratingDelta = computeRatingDelta(playerRating, opponents, gamesPlayed);
+      ratingUpdate = { rating: playerRating + ratingDelta };
+    }
+    // Bot or unrated (anonymous-opponent) finishes pay a token amount only —
+    // never enough to farm. Rated human finishes pay a flat, per-day-capped
+    // reward. Loser payout no longer scales with boxes captured.
+    const hasBotOpponent = finalPlayers.some((other) => other.isBot);
+    const matchDay = utcDayNumber(completedAt.toMillis());
+    const priorRewardDay = Number(
+      userSnapshot.exists ? userSnapshot.data()?.matchRewardDayKey ?? -1 : -1,
+    );
+    const rewardedToday =
+      priorRewardDay === matchDay
+        ? Number(userSnapshot.data()?.matchRewardTodayCount ?? 0)
+        : 0;
+
+    let sparksEarned: number;
+    let nextRewardedToday = rewardedToday;
+    if (!rated || hasBotOpponent) {
+      sparksEarned = botOrUnratedMatchSparks;
+    } else if (rewardedToday < maxRewardedMatchesPerDay) {
+      sparksEarned = won ? matchWinSparks : matchDrawOrLossSparks;
+      nextRewardedToday = rewardedToday + 1;
+    } else {
+      sparksEarned = 0;
+    }
 
     transaction.set(
       userRef,
@@ -1265,11 +1491,13 @@ function writeSignedPlayerCompletionStats(
         totalGamesPlayed: FieldValue.increment(1),
         totalWins: FieldValue.increment(won ? 1 : 0),
         totalLosses: FieldValue.increment(lost ? 1 : 0),
-        totalDraws: FieldValue.increment(isDraw ? 1 : 0),
+        totalDraws: FieldValue.increment(draw ? 1 : 0),
         totalBoxesWon: FieldValue.increment(score),
         highestBoxesSingleGame: Math.max(currentHighest, score),
-        rating: currentRating + ratingDelta,
+        ...ratingUpdate,
         sparks: FieldValue.increment(sparksEarned),
+        matchRewardDayKey: matchDay,
+        matchRewardTodayCount: nextRewardedToday,
         updatedAt: completedAt,
       },
       { merge: true },
@@ -1281,7 +1509,7 @@ function writeSignedPlayerCompletionStats(
       userId: player.userId,
       playerId: player.playerId,
       displayName: player.displayName ?? "Breezeblocks Player",
-      result: isDraw ? "draw" : won ? "win" : "loss",
+      result: won ? "win" : draw ? "draw" : "loss",
       score,
       highScore,
       playerCount: finalPlayers.length,
